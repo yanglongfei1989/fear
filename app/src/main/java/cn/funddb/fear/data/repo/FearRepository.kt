@@ -96,21 +96,38 @@ class FearRepository(private val context: Context) {
     }
 
     private suspend fun refreshDirect(): DataSource {
-        // 历史序列（加密）
+        // 历史序列（正常加密；异常时服务端可能回明文，兼容两种）
         val resp = ApiProvider.funddb.kjtlConnect(FundDbCrypto.buildSignedBody(DEFAULT_SYMBOL))
-            val blob = resp.body()?.string()?.trim()?.removeSurrounding("\"") ?: throw IllegalStateException("空响应")
-        val root = FundDbCrypto.decryptToJson(blob) ?: throw IllegalStateException("解密失败")
+        val blob = resp.body()?.string()?.trim()?.removeSurrounding("\"") ?: throw IllegalStateException("空响应")
+        if (blob.length < 100) throw IllegalStateException("响应过短")
+        val root = FundDbCrypto.decryptToJson(blob) ?: plainJson(blob)
+            ?: throw IllegalStateException("解密失败")
         if (root.optInt("code", -1) != 0) throw IllegalStateException("code != 0")
         parseSeries(root)
-        // 数值面板（明文）：当前值/官方属性/往期四环
+        // 数值面板（正常明文；兼容加密回包）
         runCatching { refreshMeta() }
         return DataSource.FUNDDB_DIRECT
     }
 
+    private fun plainJson(text: String): JSONObject? = try {
+        val o = JSONObject(FundDbCrypto.extractJson(text.trim()))
+        if (o.has("code") && o.has("data")) o else null
+    } catch (_: Exception) {
+        null
+    }
+
     private suspend fun refreshMeta() {
         val resp = ApiProvider.funddb.kjtlBasedata(FundDbCrypto.buildSignedEmptyBody())
-        val text = resp.body()?.string() ?: return
-        val root = JSONObject(text)
+        val text = resp.body()?.string()?.trim() ?: return
+        if (text.length < 20) return
+        // 明文优先，加密回包则解密（与服务端行为对齐）
+        val root = try {
+            JSONObject(FundDbCrypto.extractJson(text))
+        } catch (_: Exception) {
+            null
+        }?.takeIf { it.optInt("code", -999) == 0 }
+            ?: text.removeSurrounding("\"").let { FundDbCrypto.decryptToJson(it) }
+            ?: return
         if (root.optInt("code", -1) != 0) return
         val d = root.getJSONObject("data")
         val rings = d.optJSONArray("list") ?: JSONArray()

@@ -44,6 +44,7 @@ import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.Path
 import androidx.compose.ui.graphics.StrokeCap
+import androidx.compose.ui.graphics.StrokeJoin
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.graphics.lerp
 import androidx.compose.ui.text.font.FontWeight
@@ -481,19 +482,18 @@ private fun FearChart(points: List<FearPoint>, modifier: Modifier = Modifier) {
                 endY = bottom,
             ),
         )
-        // 渐变描边：按 x 分段（蓝->紫->红近似官方）
-        val n = vals.size
-        for (i in 1 until n step maxOf(1, n / 120)) {
-            val f0 = (i - 1).toFloat() / (n - 1)
-            val c = if (f0 < 0.5f) lerp(FearBlue, MidPurple, f0 * 2) else lerp(MidPurple, GreedRed, (f0 - 0.5f) * 2)
-            val seg = Path().apply {
-                moveTo(x(i - 1), y(vals[i - 1]))
-                lineTo(x(i), y(vals[i]))
-            }
-            drawPath(seg, c, style = Stroke(width = 5f, cap = StrokeCap.Round))
-        }
-        drawCircle(Color.White, radius = 7f, center = Offset(x(n - 1), y(vals.last())))
-        drawCircle(FearBlue, radius = 4.5f, center = Offset(x(n - 1), y(vals.last())))
+        // 一笔连续描边：横向蓝->紫->红渐变（官方色流），杜绝分段缝隙
+        drawPath(
+            line,
+            Brush.horizontalGradient(
+                listOf(FearBlue, MidPurple, GreedRed),
+                startX = left,
+                endX = right,
+            ),
+            style = Stroke(width = 5f, cap = StrokeCap.Round, join = StrokeJoin.Round),
+        )
+        drawCircle(Color.White, radius = 7f, center = Offset(x(vals.size - 1), y(vals.last())))
+        drawCircle(FearBlue, radius = 4.5f, center = Offset(x(vals.size - 1), y(vals.last())))
     }
 }
 

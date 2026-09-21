@@ -1,11 +1,14 @@
 package cn.funddb.fear.widget
 
 import android.content.Context
+import android.graphics.Bitmap
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.glance.GlanceId
 import androidx.glance.GlanceTheme
+import androidx.glance.Image
+import androidx.glance.ImageProvider
 import androidx.glance.action.actionStartActivity
 import androidx.glance.action.clickable
 import androidx.glance.appwidget.GlanceAppWidget
@@ -39,6 +42,7 @@ class FearWidget : GlanceAppWidget() {
     override suspend fun provideGlance(context: Context, id: GlanceId) {
         val repo = FearRepository(context)
         val latest = runCatching { repo.latest() }.getOrNull()
+        val history = runCatching { repo.history() }.getOrNull().orEmpty()
         val value = latest?.point?.fear
         val emotion = latest?.emotion ?: Emotion.of(value)
         val time = latest?.let {
@@ -51,6 +55,9 @@ class FearWidget : GlanceAppWidget() {
             deriv < 0 -> "▼${fmt(deriv)}"
             else -> "持平"
         }
+        val chart: Bitmap? = runCatching {
+            WidgetChart.render(history.map { it.fear ?: Double.NaN })
+        }.getOrNull()
 
         provideContent {
             GlanceTheme {
@@ -64,7 +71,6 @@ class FearWidget : GlanceAppWidget() {
                 ) {
                     Column(
                         modifier = androidx.glance.GlanceModifier.fillMaxSize(),
-                        verticalAlignment = Alignment.CenterVertically,
                     ) {
                         Row(
                             modifier = androidx.glance.GlanceModifier.fillMaxWidth(),
@@ -73,7 +79,7 @@ class FearWidget : GlanceAppWidget() {
                             Text(
                                 text = if (value == null || value.isNaN()) "--" else fmt0(value),
                                 style = TextStyle(
-                                    fontSize = 30.sp,
+                                    fontSize = 28.sp,
                                     fontWeight = FontWeight.Bold,
                                     color = ColorProvider(emotionColor(emotion)),
                                 ),
@@ -88,10 +94,19 @@ class FearWidget : GlanceAppWidget() {
                                 ),
                             )
                         }
-                        Spacer(modifier = androidx.glance.GlanceModifier.height(1.dp))
+                        if (chart != null) {
+                            Image(
+                                provider = ImageProvider(chart),
+                                contentDescription = "走势",
+                                modifier = androidx.glance.GlanceModifier.fillMaxWidth()
+                                    .defaultWeight(),
+                            )
+                        } else {
+                            Spacer(modifier = androidx.glance.GlanceModifier.defaultWeight())
+                        }
                         Text(
                             text = "恐惧贪婪 $time",
-                            style = TextStyle(fontSize = 11.sp, color = ColorProvider(Color(0xFF6B7684))),
+                            style = TextStyle(fontSize = 10.sp, color = ColorProvider(Color(0xFF6B7684))),
                         )
                     }
                 }
