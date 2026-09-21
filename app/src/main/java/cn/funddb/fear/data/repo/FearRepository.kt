@@ -64,7 +64,7 @@ class FearRepository(private val context: Context) {
     private suspend fun fallbackRings(): List<PastRing> {
         val hist = dao.history(sym)
         if (hist.isEmpty()) return emptyList()
-        fun atBack(offset: Int): FearPoint = hist.getOrElse(hist.size - 1 - offset.coerceAtMost(hist.size - 1)) { hist.last() }
+        fun atBack(offset: Int): FearEntity = hist.getOrElse(hist.size - 1 - offset.coerceAtMost(hist.size - 1)) { hist.last() }
         return listOf(
             ringOf("1日前", atBack(1).fear),
             ringOf("1周前", atBack(5).fear),
@@ -98,7 +98,7 @@ class FearRepository(private val context: Context) {
     private suspend fun refreshDirect(): DataSource {
         // 历史序列（加密）
         val resp = ApiProvider.funddb.kjtlConnect(FundDbCrypto.buildSignedBody(DEFAULT_SYMBOL))
-        val blob = resp.body()?.string()?.trim()?.trim('"') ?: throw IllegalStateException("空响应")
+            val blob = resp.body()?.string()?.trim()?.removeSurrounding("\"") ?: throw IllegalStateException("空响应")
         val root = FundDbCrypto.decryptToJson(blob) ?: throw IllegalStateException("解密失败")
         if (root.optInt("code", -1) != 0) throw IllegalStateException("code != 0")
         parseSeries(root)

@@ -98,7 +98,7 @@ object FundDbCrypto {
     /** 解密 is_jm 接口返回的 base64 串，失败返回 null。 */
     fun decryptToJson(cipherBase64: String): JSONObject? {
         return try {
-            val ct = Base64.decode(cipherBase64.trim().trim('"'), Base64.DEFAULT)
+            val ct = Base64.decode(cipherBase64.trim().removeSurrounding("\""), Base64.DEFAULT)
             val cipher = Cipher.getInstance("AES/CBC/NoPadding")
             cipher.init(
                 Cipher.DECRYPT_MODE,
