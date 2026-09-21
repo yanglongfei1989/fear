@@ -10,6 +10,7 @@ import androidx.glance.action.actionStartActivity
 import androidx.glance.action.clickable
 import androidx.glance.appwidget.GlanceAppWidget
 import androidx.glance.appwidget.GlanceAppWidgetReceiver
+import androidx.glance.appwidget.cornerRadius
 import androidx.glance.appwidget.provideContent
 import androidx.glance.background
 import androidx.glance.layout.Alignment
@@ -26,7 +27,6 @@ import androidx.glance.text.Text
 import androidx.glance.text.TextStyle
 import androidx.glance.unit.ColorProvider
 import cn.funddb.fear.data.model.Emotion
-import cn.funddb.fear.data.model.Symbol
 import cn.funddb.fear.data.repo.FearRepository
 import cn.funddb.fear.ui.MainActivity
 import java.text.SimpleDateFormat
@@ -38,18 +38,18 @@ class FearWidget : GlanceAppWidget() {
 
     override suspend fun provideGlance(context: Context, id: GlanceId) {
         val repo = FearRepository(context)
-        val latest = runCatching { repo.latest(Symbol.SHANGHAI) }.getOrNull()
+        val latest = runCatching { repo.latest() }.getOrNull()
         val value = latest?.point?.fear
-        val emotion = Emotion.of(value)
+        val emotion = latest?.emotion ?: Emotion.of(value)
         val time = latest?.let {
             SimpleDateFormat("MM-dd HH:mm", Locale.getDefault()).format(Date(it.fetchedAtMillis))
         } ?: "--"
         val deriv = latest?.derivative
         val derivText = when {
             deriv == null -> ""
-            deriv > 0 -> "▲ +${fmt(deriv)}"
-            deriv < 0 -> "▼ ${fmt(deriv)}"
-            else -> "— 0.0"
+            deriv > 0 -> "▲+${fmt(deriv)}"
+            deriv < 0 -> "▼${fmt(deriv)}"
+            else -> "持平"
         }
 
         provideContent {
@@ -58,7 +58,8 @@ class FearWidget : GlanceAppWidget() {
                     modifier = androidx.glance.GlanceModifier
                         .fillMaxSize()
                         .background(ColorProvider(Color(0xFF141A20)))
-                        .padding(12.dp)
+                        .cornerRadius(18.dp)
+                        .padding(10.dp)
                         .clickable(actionStartActivity<MainActivity>()),
                 ) {
                     Column(
@@ -70,30 +71,26 @@ class FearWidget : GlanceAppWidget() {
                             verticalAlignment = Alignment.CenterVertically,
                         ) {
                             Text(
-                                text = if (value == null) "--" else fmt(value),
+                                text = if (value == null || value.isNaN()) "--" else fmt0(value),
                                 style = TextStyle(
-                                    fontSize = 34.sp,
+                                    fontSize = 30.sp,
                                     fontWeight = FontWeight.Bold,
                                     color = ColorProvider(emotionColor(emotion)),
                                 ),
                             )
                             Spacer(modifier = androidx.glance.GlanceModifier.defaultWeight())
                             Text(
-                                text = emotion.label,
+                                text = emotion.label + (if (derivText.isNotEmpty()) " $derivText" else ""),
                                 style = TextStyle(
-                                    fontSize = 15.sp,
+                                    fontSize = 13.sp,
                                     fontWeight = FontWeight.Medium,
                                     color = ColorProvider(emotionColor(emotion)),
                                 ),
                             )
                         }
-                        Spacer(modifier = androidx.glance.GlanceModifier.height(2.dp))
+                        Spacer(modifier = androidx.glance.GlanceModifier.height(1.dp))
                         Text(
-                            text = "恐惧贪婪指数 $derivText",
-                            style = TextStyle(fontSize = 12.sp, color = ColorProvider(Color(0xFF9AA4B2))),
-                        )
-                        Text(
-                            text = "更新 $time · 点击查看曲线",
+                            text = "恐惧贪婪 $time",
                             style = TextStyle(fontSize = 11.sp, color = ColorProvider(Color(0xFF6B7684))),
                         )
                     }
@@ -103,13 +100,14 @@ class FearWidget : GlanceAppWidget() {
     }
 
     private fun fmt(v: Double): String = String.format(Locale.US, "%.1f", v)
+    private fun fmt0(v: Double): String = String.format(Locale.US, "%.0f", v)
 
     private fun emotionColor(e: Emotion): Color = when (e) {
-        Emotion.EXTREME_FEAR -> Color(0xFF3FA7F5)
-        Emotion.FEAR -> Color(0xFF5AC8FA)
+        Emotion.EXTREME_FEAR -> Color(0xFF0B6ECE)
+        Emotion.FEAR -> Color(0xFF1890FF)
         Emotion.NEUTRAL -> Color(0xFF9AA4B2)
-        Emotion.GREED -> Color(0xFFFF9F43)
-        Emotion.EXTREME_GREED -> Color(0xFFFF5A5A)
+        Emotion.GREED -> Color(0xFFFF7A45)
+        Emotion.EXTREME_GREED -> Color(0xFFF5222D)
         Emotion.UNKNOWN -> Color(0xFF9AA4B2)
     }
 }

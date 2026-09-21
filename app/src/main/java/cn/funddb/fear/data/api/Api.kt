@@ -63,9 +63,16 @@ object MirrorFetcher {
 private const val FUNDDB_HOST = "https://api.jiucaishuo.com/"
 
 interface FundDbApi {
-    /** 恐惧贪婪主接口（is_jm 加密，请求体由 FundDbCrypto.buildSignedBody 构造）。 */
+    /** 恐惧贪婪主序列（is_jm 加密，请求体由 FundDbCrypto.buildSignedBody 构造）。 */
     @POST("v2/kjtl/kjtlconnect")
     suspend fun kjtlConnect(@Body body: okhttp3.RequestBody): retrofit2.Response<okhttp3.ResponseBody>
+
+    /**
+     * 恐惧贪婪数值面板（明文）：当前值/官方属性/往期四环/更新进度。
+     * 无参调用（fetch 层补 type/version），请求体由 FundDbCrypto.signedBodyMap 构造。
+     */
+    @POST("v2/kjtl/getbasedata")
+    suspend fun kjtlBasedata(@Body body: okhttp3.RequestBody): retrofit2.Response<okhttp3.ResponseBody>
 
     /** 恐惧贪婪 6 大因子名（明文）。 */
     @POST("v2/kjtl/getalltypes")

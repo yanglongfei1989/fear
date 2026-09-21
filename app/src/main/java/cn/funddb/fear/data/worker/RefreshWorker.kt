@@ -22,7 +22,7 @@ const val HOURLY_WORK_NAME = "fear-hourly-refresh"
 class RefreshWorker(ctx: Context, params: WorkerParameters) : CoroutineWorker(ctx, params) {
     override suspend fun doWork(): Result {
         return try {
-            FearRepository(applicationContext).refreshAll()
+            FearRepository(applicationContext).refresh()
             FearWidget().updateAll(applicationContext)
             Result.success()
         } catch (e: Exception) {

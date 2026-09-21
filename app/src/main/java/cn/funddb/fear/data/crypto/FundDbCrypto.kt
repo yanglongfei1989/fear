@@ -39,16 +39,22 @@ object FundDbCrypto {
     private val KEY_BYTES = (KB + "ll1").toByteArray(Charsets.UTF_8) // 32B，AES-256
     private val IV_BYTES = (KA + "ll1").toByteArray(Charsets.UTF_8).copyOf(16)
 
-    /** 构造带签名的完整请求体（含 32 个派生字段）。 */
-    fun buildSignedBody(symbol: Symbol, time: Int = -1): RequestBody {
+    /** 主序列请求体：{gu_code, time} + fetch 层字段 + 签名。 */
+    fun buildSignedBody(symbol: Symbol, time: Int = -1): RequestBody =
+        signedBodyMap(mapOf("gu_code" to symbol.guCode, "time" to time)).toRequestBody()
+
+    /** 数值面板请求体：无参（fetch 层补 type/version）+ 签名，如 getbasedata。 */
+    fun buildSignedEmptyBody(): RequestBody = signedBodyMap(emptyMap()).toRequestBody()
+
+    /** 返回带签名的完整参数表（不含序列化），与线上 32/32 校验一致。 */
+    fun signedBodyMap(extra: Map<String, Any>): Map<String, Any> {
         val base = linkedMapOf<String, Any>(
-            "gu_code" to symbol.guCode,
-            "time" to time,
             "type" to REQ_TYPE,
             "version" to REQ_VERSION,
             "authtoken" to "",
             "act_time" to System.currentTimeMillis(),
         )
+        base.putAll(extra)
         val o = base.keys.sorted().mapNotNull { k ->
             val v = base[k]
             when {
@@ -79,8 +85,12 @@ object FundDbCrypto {
             "nbf4uj7y432" to sub(21, 2), "yi854tew" to sub(29, 2),
             "h13ey474" to sub(29, 3), "quikgdky" to sub(27, 2),
         )
+        return base + signed
+    }
+
+    private fun Map<String, Any>.toRequestBody(): RequestBody {
         val json = JSONObject()
-        (base + signed).forEach { (k, v) -> json.put(k, v) }
+        forEach { (k, v) -> json.put(k, v) }
         return json.toString()
             .toRequestBody("application/json; charset=utf-8".toMediaType())
     }

@@ -2,104 +2,151 @@ package cn.funddb.fear.data.repo
 
 import android.content.Context
 import cn.funddb.fear.data.api.ApiProvider
+import cn.funddb.fear.data.api.MirrorFetcher
 import cn.funddb.fear.data.crypto.FundDbCrypto
 import cn.funddb.fear.data.db.FearDatabase
 import cn.funddb.fear.data.db.FearEntity
+import cn.funddb.fear.data.db.FearMeta
+import cn.funddb.fear.data.model.DEFAULT_SYMBOL
 import cn.funddb.fear.data.model.DataSource
+import cn.funddb.fear.data.model.Emotion
 import cn.funddb.fear.data.model.FearLatest
 import cn.funddb.fear.data.model.FearPoint
-import cn.funddb.fear.data.model.Symbol
+import cn.funddb.fear.data.model.PastRing
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
+import org.json.JSONArray
+import org.json.JSONObject
 
 /**
- * 数据策略：韭圈儿 funddb 直连主源（官方数）-> 开源镜像降级 -> 本地缓存。
- *
- * 直连已全链路验证（签名 32/32 复刻 + AES 解密 + 32B 填充兼容），
- * 失败时自动降级，保证组件永不白屏。来源会标注在 UI 上。
+ * 数据策略（单口径：上证/官方默认）：
+ *  1. funddb 直连：kjtlconnect（历史序列）+ getbasedata（当前值/官方属性/往期四环）；
+ *  2. 开源镜像降级；3. 本地缓存。来源标注在 UI。
  */
 class FearRepository(private val context: Context) {
 
     private val dao = FearDatabase.get(context).fearDao()
-    private val lastSource = mutableMapOf<String, DataSource>()
+    private var lastSource: DataSource = DataSource.CACHE
 
-    suspend fun history(symbol: Symbol): List<FearPoint> = withContext(Dispatchers.IO) {
-        val cached = dao.history(symbol.name).map { FearPoint(it.date, it.fear, it.indexValue) }
+    private val sym: String get() = DEFAULT_SYMBOL.name
+
+    suspend fun history(): List<FearPoint> = withContext(Dispatchers.IO) {
+        val cached = dao.history(sym).map { FearPoint(it.date, it.fear, it.indexValue) }
         if (cached.isNotEmpty()) return@withContext cached
-        refresh(symbol)
-        dao.history(symbol.name).map { FearPoint(it.date, it.fear, it.indexValue) }
+        refresh()
+        dao.history(sym).map { FearPoint(it.date, it.fear, it.indexValue) }
     }
 
-    suspend fun latest(symbol: Symbol): FearLatest? = withContext(Dispatchers.IO) {
-        val two = dao.latestTwo(symbol.name)
-        if (two.isEmpty()) {
-            refresh(symbol)
-        }
-        val rows = dao.latestTwo(symbol.name)
+    suspend fun latest(): FearLatest? = withContext(Dispatchers.IO) {
+        if (dao.count(sym) == 0) refresh()
+        val rows = dao.latestTwo(sym)
         if (rows.isEmpty()) return@withContext null
         val cur = rows[0]
         val prev = rows.getOrNull(1)
         val deriv = if (cur.fear != null && prev?.fear != null) cur.fear - prev.fear else null
+        val meta = dao.meta(sym)
         FearLatest(
             point = FearPoint(cur.date, cur.fear, cur.indexValue),
             derivative = deriv,
-            symbol = symbol,
-            source = lastSource[symbol.name] ?: DataSource.CACHE,
-            fetchedAtMillis = cur.fetchedAt,
+            emotionLabel = meta?.statusStr,
+            currentTime = meta?.currentTime,
+            source = lastSource,
+            fetchedAtMillis = meta?.fetchedAt ?: cur.fetchedAt,
         )
     }
 
-    /** 拉取并落库，返回本次实际来源；抛异常由调用方吃掉并继续用缓存。 */
-    suspend fun refresh(symbol: Symbol): DataSource = withContext(Dispatchers.IO) {
-        // 1) 直连尝试（best-effort，失败不抛）
-        tryDirect(symbol)?.let {
-            lastSource[symbol.name] = it
+    suspend fun rings(): List<PastRing> = withContext(Dispatchers.IO) {
+        if (dao.meta(sym) == null) refresh()
+        parseRings(dao.meta(sym)?.ringsJson).ifEmpty { fallbackRings() }
+    }
+
+    /** 往期四环降级：用历史序列按交易日偏移估算（1/5/22/252）。 */
+    private suspend fun fallbackRings(): List<PastRing> {
+        val hist = dao.history(sym)
+        if (hist.isEmpty()) return emptyList()
+        fun atBack(offset: Int): FearPoint = hist.getOrElse(hist.size - 1 - offset.coerceAtMost(hist.size - 1)) { hist.last() }
+        return listOf(
+            ringOf("1日前", atBack(1).fear),
+            ringOf("1周前", atBack(5).fear),
+            ringOf("1月前", atBack(22).fear),
+            ringOf("1年前", atBack(252).fear),
+        )
+    }
+
+    private fun ringOf(name: String, value: Double?): PastRing {
+        val v = value ?: Double.NaN
+        val e = Emotion.of(value)
+        return PastRing(name, v, e, "")
+    }
+
+    /** 拉取并落库，返回本次实际来源。 */
+    suspend fun refresh(): DataSource = withContext(Dispatchers.IO) {
+        // 1) 直连：历史序列 + 数值面板
+        runCatching { refreshDirect() }.getOrNull()?.let {
+            lastSource = it
             return@withContext it
         }
-        // 2) 镜像主源
-        val res = cn.funddb.fear.data.api.MirrorFetcher.fetch()
-        val n = minOf(res.chart.dates.size, res.chart.fgi.size)
-        val now = System.currentTimeMillis()
-        val rows = (0 until n).map { i ->
-            FearEntity(
-                date = res.chart.dates[i],
-                fear = res.chart.fgi.getOrNull(i),
-                indexValue = res.chart.hs300.getOrNull(i),
-                symbol = symbol.name,
-                fetchedAt = now,
-            )
+        // 2) 镜像降级
+        runCatching { refreshMirror() }.getOrNull()?.let {
+            lastSource = it
+            return@withContext it
         }
-        if (rows.isNotEmpty()) {
-            dao.upsertAll(rows)
-            lastSource[symbol.name] = DataSource.MIRROR
-            return@withContext DataSource.MIRROR
-        }
+        lastSource = DataSource.CACHE
         DataSource.CACHE
     }
 
-    suspend fun refreshAll(): Map<Symbol, DataSource> =
-        Symbol.values().associateWith { runCatching { refresh(it) }.getOrDefault(DataSource.CACHE) }
-
-    /**
-     * 韭圈儿直连：带签名请求 + AES 解密 + 落库。
-     * 成功返回 FUNDDB_DIRECT，任何异常返回 null 走降级。
-     */
-    private suspend fun tryDirect(symbol: Symbol): DataSource? {
-        return try {
-            val resp = ApiProvider.funddb.kjtlConnect(FundDbCrypto.buildSignedBody(symbol))
-            val blob = resp.body()?.string()?.trim()?.trim('"') ?: return null
-            if (blob.length < 100) return null
-            val root = FundDbCrypto.decryptToJson(blob) ?: return null
-            if (root.optInt("code", -1) != 0) return null
-            parseFundDbPlain(root, symbol)
-            DataSource.FUNDDB_DIRECT
-        } catch (_: Exception) {
-            null
-        }
+    private suspend fun refreshDirect(): DataSource {
+        // 历史序列（加密）
+        val resp = ApiProvider.funddb.kjtlConnect(FundDbCrypto.buildSignedBody(DEFAULT_SYMBOL))
+        val blob = resp.body()?.string()?.trim()?.trim('"') ?: throw IllegalStateException("空响应")
+        val root = FundDbCrypto.decryptToJson(blob) ?: throw IllegalStateException("解密失败")
+        if (root.optInt("code", -1) != 0) throw IllegalStateException("code != 0")
+        parseSeries(root)
+        // 数值面板（明文）：当前值/官方属性/往期四环
+        runCatching { refreshMeta() }
+        return DataSource.FUNDDB_DIRECT
     }
 
-    private suspend fun parseFundDbPlain(root: org.json.JSONObject, symbol: Symbol) {
-        // 明文结构：{data:{xAxis:{categories},series:[{恐惧贪婪},{大盘指数}]}}
+    private suspend fun refreshMeta() {
+        val resp = ApiProvider.funddb.kjtlBasedata(FundDbCrypto.buildSignedEmptyBody())
+        val text = resp.body()?.string() ?: return
+        val root = JSONObject(text)
+        if (root.optInt("code", -1) != 0) return
+        val d = root.getJSONObject("data")
+        val rings = d.optJSONArray("list") ?: JSONArray()
+        val out = ArrayList<PastRing>(rings.length())
+        for (i in 0 until rings.length()) {
+            val o = rings.optJSONObject(i) ?: continue
+            val series = o.optJSONObject("data")?.optJSONArray("series")
+            val frac = series?.optJSONObject(0)?.optDouble("data", Double.NaN) ?: Double.NaN
+            val label = o.optString("status_str", "")
+            out.add(
+                PastRing(
+                    name = o.optString("name", ""),
+                    value = if (frac.isNaN()) Double.NaN else frac * 100,
+                    emotion = Emotion.fromLabel(label).takeUnless { it == Emotion.UNKNOWN }
+                        ?: Emotion.of(if (frac.isNaN()) null else frac * 100),
+                    colorHex = o.optString("status_color", ""),
+                ),
+            )
+        }
+        dao.upsertMeta(
+            FearMeta(
+                symbol = sym,
+                num = d.optDouble("num", Double.NaN).takeUnless { it.isNaN() },
+                statusStr = d.optString("status_str", null),
+                currentTime = d.optString("current_time", null),
+                ringsJson = JSONArray(out.map {
+                    JSONObject().put("name", it.name).put("value", it.value)
+                        .put("label", it.emotion.label).put("color", it.colorHex)
+                }).toString(),
+                fetchedAt = System.currentTimeMillis(),
+            ),
+        )
+    }
+
+    private suspend fun parseSeries(root: JSONObject) {
+        // {data:{xAxis:{categories},series:[{恐惧贪婪},{大盘指数}]}}
         val data = root.getJSONObject("data")
         val cats = data.getJSONObject("xAxis").getJSONArray("categories")
         val series = data.getJSONArray("series")
@@ -111,10 +158,47 @@ class FearRepository(private val context: Context) {
                 date = cats.getString(i),
                 fear = fearArr?.optDouble(i, Double.NaN)?.takeUnless { it.isNaN() },
                 indexValue = idxArr?.optDouble(i, Double.NaN)?.takeUnless { it.isNaN() },
-                symbol = symbol.name,
+                symbol = sym,
                 fetchedAt = now,
             )
         }
         if (rows.isNotEmpty()) dao.upsertAll(rows)
+    }
+
+    private suspend fun refreshMirror(): DataSource {
+        val res = MirrorFetcher.fetch()
+        val n = minOf(res.chart.dates.size, res.chart.fgi.size)
+        val now = System.currentTimeMillis()
+        val rows = (0 until n).map { i ->
+            FearEntity(
+                date = res.chart.dates[i],
+                fear = res.chart.fgi.getOrNull(i),
+                indexValue = res.chart.hs300.getOrNull(i),
+                symbol = sym,
+                fetchedAt = now,
+            )
+        }
+        if (rows.isEmpty()) throw IllegalStateException("镜像空数据")
+        dao.upsertAll(rows)
+        return DataSource.MIRROR
+    }
+
+    private fun parseRings(json: String?): List<PastRing> {
+        if (json.isNullOrBlank()) return emptyList()
+        return try {
+            val arr = JSONArray(json)
+            (0 until arr.length()).mapNotNull { i ->
+                val o = arr.optJSONObject(i) ?: return@mapNotNull null
+                PastRing(
+                    name = o.optString("name"),
+                    value = o.optDouble("value", Double.NaN),
+                    emotion = Emotion.fromLabel(o.optString("label")).takeUnless { it == Emotion.UNKNOWN }
+                        ?: Emotion.of(o.optDouble("value", Double.NaN).takeUnless { it.isNaN() }),
+                    colorHex = o.optString("color"),
+                )
+            }
+        } catch (_: Exception) {
+            emptyList()
+        }
     }
 }

@@ -35,9 +35,27 @@ interface FearDao {
 
     @Query("DELETE FROM fear_points WHERE symbol = :symbol")
     suspend fun clear(symbol: String)
+
+    @Insert(onConflict = OnConflictStrategy.REPLACE)
+    suspend fun upsertMeta(meta: FearMeta)
+
+    @Query("SELECT * FROM fear_meta WHERE symbol = :symbol LIMIT 1")
+    suspend fun meta(symbol: String): FearMeta?
 }
 
-@Database(entities = [FearEntity::class], version = 1, exportSchema = false)
+/** 官方数值面板：当前值/属性/往期四环（getbasedata 下发，日更）。 */
+@Entity(tableName = "fear_meta")
+data class FearMeta(
+    @PrimaryKey val symbol: String,
+    val num: Double?,
+    val statusStr: String?,
+    val currentTime: String?,
+    /** PastRing 列表的 JSON（含 name/value/label/colorHex） */
+    val ringsJson: String,
+    val fetchedAt: Long,
+)
+
+@Database(entities = [FearEntity::class, FearMeta::class], version = 2, exportSchema = false)
 abstract class FearDatabase : androidx.room.RoomDatabase() {
     abstract fun fearDao(): FearDao
 
@@ -50,7 +68,7 @@ abstract class FearDatabase : androidx.room.RoomDatabase() {
                     context.applicationContext,
                     FearDatabase::class.java,
                     "fear.db",
-                ).build().also { instance = it }
+                ).fallbackToDestructiveMigration().build().also { instance = it }
             }
     }
 }
