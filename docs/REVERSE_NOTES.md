@@ -1,11 +1,10 @@
-# funddb 恐惧贪婪接口逆向笔记（2026-09-21 实测）
+# funddb 恐惧贪婪接口逆向笔记（2026-09-21 全链路打通）
 
 ## 1. 结论一句话
 
-- 页面 `https://funddb.cn/tool/fear` 是 SPA（韭圈儿，`funddb.cn`），真数据走 `POST https://api.jiucaishuo.com/v2/kjtl/kjtlconnect`。
-- 该接口 `is_jm=1`（加密）+ 请求签名双重保护；**未签名请求能拿到 200 + 11KB 加密 blob，但三代密钥都解不开**。
-- 同 host 下 `/v2/kjtlother/kjtlconnect` 是明文但属于另一产品（军工 PH 值），不是恐惧贪婪。
-- App 当前策略：镜像主源 + Room 缓存 + 直连 Best-effort 预埋（`FundDbCrypto` / `tryDirect`）。
+- 页面 `https://funddb.cn/tool/fear` 是 SPA（韭圈儿），真数据走 `POST https://api.jiucaishuo.com/v2/kjtl/kjtlconnect`。
+- **签名 + 解密已全部复刻**：真浏览器抓包 32/32 字段一致；解密出官方最新值 **36.16（2026-09-18）**，与页面截图一致。
+- App 当前策略：**funddb 直连主源** -> 开源镜像降级 -> Room 缓存（来源标注在 UI）。
 
 ## 2. 已验证的请求（Python 复现通过）
 
@@ -28,26 +27,34 @@ Body: {"gu_code":"000001.SH","type":"h5","version":"2.4.5","act_time":<ms>}
 
 - `kjtlconnect` 经统一 `fetch({url:"/v2/kjtl/kjtlconnect", is_jm:!0, ...})`，返回 string 时走 `A(e.data)` 解密。
 - `A(t) = JSON.parse(AES.decrypt(t, H.e(), {iv: H.a(), CBC, Pkcs7}))`。
-- `H.a()/H.e()` 由 5 个同构对象 P/z/q/E/H 的 `substr` 链逐级拼接，数学上恒等于 `k.a/k.b` 全量：
-  - `k.a` 初值 `nengnongchulainb` -> 运行时覆写 `bvroqevdjqibsdkq`（16B）
-  - `k.b` 初值 `bieyanjiulexixishuibatoufamei` -> 运行时覆写 `eveqocftukbotqjcequcnkrqlw1oi`（29B）
-- monkey-patch：`AES.decrypt` 被覆写为 `key=keyStr+"ll"`, `iv=ivStr+"ll"` 后再调原生。
-- 历史密钥（AKShare `cninfo.js`）：gen1 `h5.jiucaishuo.com*`；gen2 `bieyanjiulexixishuibatoufameill1/nengnongchulainbl1`。
-- **三代密钥对未签名 blob 全部 Malformed UTF-8 / Padding 错误**，说明响应密钥与请求签名绑定或签名失败返回不可解包。
+- `H.a()/H.e()` 由 5 个同构对象 P/z/q/E/H 的 `substr` 链逐级拼接，恒等于 `k.a/k.b` 全量：
+  - `k.a` 终值 `bvroqevdjqibsdkq`（16B），`k.b` 终值 `eveqocftukbotqjcequcnkrqlw1oi`（29B）。
+- **两个叠加补丁（缺一不可，第二个极易漏）**：
+  1. `AES.decrypt` 覆写：`key=keyStr+"ll"`，`iv=ivStr+"ll"`；
+  2. `Utf8.parse` 覆写：`parse(x)` 实际解析 `x+"1"`。
+  - 叠加结果：`key = k.b + "ll1"`（**恰 32B，AES-256**），`iv = (k.a + "ll1").take(16)`。
+- 服务端按 **32B 对齐填充**（填充字节值=填充长度，可 >16），标准 PKCS5 会误杀，
+  App 端用 `AES/CBC/NoPadding` 解后 `extractJson()` 截断（等价 Python `json.raw_decode`）。
+- 历史密钥（AKShare `cninfo.js` gen1/gen2）已废弃，仅备查。
 
-## 4. 请求签名（待补，激活直连的关键）
+## 4. 请求签名（已复刻，32/32 验证通过）
 
-`fetch` 前对 `t.data` 追加约 30 个混淆字段（`tirgkjfs/abiokytke/u54rg5d/...`），由 `md5(sorted(params)+secret)` 按固定下标截取；
-secret 来自 `p.a.fklreialk`。锚点：`app.*.js` 中 `case 0:for(r in t.data.type,t.data.version,a=+new Date,t.data.act_time=a...` 段。
+- `fetch` 先强制 `type="pc"`、`version="2.2.7"`（`p.a.version`）、`authtoken=""`；
+- 恐惧页调用：`kjtlconnect({gu_code:"000001.SH"|"000300.SH", time:-1})`，`act_time=now`；
+- `o = 按 key 排序拼接非空标量值 + SECRET("EWf45rlv#kfsr@k#gfksgkr")`，`u = md5(o)`；
+- 32 字段映射（`b()` 实参顺序对应形参，见 `FundDbCrypto.buildSignedBody`），
+  已用线上 `click/click` 与 `kjtlconnect` 真请求双重校验 32/32 一致。
 
-## 5. 激活直连的标准动作
+## 5. 明文结构（解密成功后校验用）
 
-1. Playwright 打开 `https://funddb.cn/tool/fear`，拦截 `kjtlconnect` 的请求体（即合法签名样本）+ 解密后 `A()` 返回的明文结构；
-2. 把签名函数（含 `fklreialk`）移植为 Kotlin（md5 为主，无非对称）；
-3. 填入 `FundDbCrypto.buildSignedBody`，跑通后 `tryDirect` 会自动落库并标记 `FUNDDB_DIRECT`。
+`data.xAxis.categories=[date]`（`time=-1` 时约 241 天），
+`data.series[0]` 为 `恐惧贪婪`，`data.series[1]` 为 `上证指数(点击隐藏)`（沪深300 口径同理）。
+实测：2026-09-18 恐惧贪婪 **36.16**，上证 3911.87。
 
-## 6. 明文结构（解密成功后校验用）
+## 6. 排障备忘
 
-与 `kjtlother` 同形：`data.xAxis.categories=[date]`，`data.series[0].data=[fear]`，`data.series[1].data=[大盘点位]`。
-
-样本原文已存临时目录（构建机）：`enc.txt`（未签名 blob）、`kjtl_000001.SH.json`（军工明文对照）。
+- 因子明细 `getlist` 同密钥体系，可用同样方式解密（6 因子 id=1..6）。
+- `kjtlother/*` 明文接口是军工 PH 值等其他产品，不是恐惧贪婪，别接错。
+- 页面有反调试（检出 DevTools 会清空 body）+ 恐贪页有知情弹窗（`local_sto_fear_stauts`），
+  自动化抓包需 `localStorage` 预置 + `JSON.parse` hook 外发（见本次排障过程）。
+- 样本：`fear_direct.json`（构建机临时目录，解密后明文）。

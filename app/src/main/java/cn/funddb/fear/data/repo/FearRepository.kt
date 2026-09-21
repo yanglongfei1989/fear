@@ -2,7 +2,6 @@ package cn.funddb.fear.data.repo
 
 import android.content.Context
 import cn.funddb.fear.data.api.ApiProvider
-import cn.funddb.fear.data.api.FundDbApi
 import cn.funddb.fear.data.crypto.FundDbCrypto
 import cn.funddb.fear.data.db.FearDatabase
 import cn.funddb.fear.data.db.FearEntity
@@ -14,11 +13,10 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 
 /**
- * 数据策略：镜像优先（明文、稳定、日更）-> 本地缓存 -> 韭圈儿直连尝试。
+ * 数据策略：韭圈儿 funddb 直连主源（官方数）-> 开源镜像降级 -> 本地缓存。
  *
- * 说明：镜像是 A 股全市场恐惧贪婪（5 因子），与 funddb 同概念；
- * 直连 funddb 加密接口待签名补齐（见 FundDbCrypto），目前仅做 Best-effort 尝试，
- * 成功后会覆盖为 FUNDDB_DIRECT 来源。
+ * 直连已全链路验证（签名 32/32 复刻 + AES 解密 + 32B 填充兼容），
+ * 失败时自动降级，保证组件永不白屏。来源会标注在 UI 上。
  */
 class FearRepository(private val context: Context) {
 
@@ -83,28 +81,26 @@ class FearRepository(private val context: Context) {
         Symbol.values().associateWith { runCatching { refresh(it) }.getOrDefault(DataSource.CACHE) }
 
     /**
-     * 韭圈儿直连尝试：明文因子接口探活 + 加密主接口解密。
-     * 成功（解密出合法 JSON）才落库并返回 FUNDDB_DIRECT，否则返回 null 走镜像。
+     * 韭圈儿直连：带签名请求 + AES 解密 + 落库。
+     * 成功返回 FUNDDB_DIRECT，任何异常返回 null 走降级。
      */
     private suspend fun tryDirect(symbol: Symbol): DataSource? {
         return try {
-            val body = FundDbCrypto.buildSignedBody(FundDbApi.bodyOf(symbol))
-            val resp = ApiProvider.funddb.kjtlConnect(body)
+            val resp = ApiProvider.funddb.kjtlConnect(FundDbCrypto.buildSignedBody(symbol))
             val blob = resp.body()?.string()?.trim()?.trim('"') ?: return null
             if (blob.length < 100) return null
-            val plain = FundDbCrypto.decryptCurrent(blob) ?: return null
-            if (!plain.trimStart().startsWith("{")) return null
-            // 明文结构与 kjtlother 一致：{data:{xAxis:{categories},series:[{...}]}}，解析落库
-            parseFundDbPlain(plain, symbol)
+            val root = FundDbCrypto.decryptToJson(blob) ?: return null
+            if (root.optInt("code", -1) != 0) return null
+            parseFundDbPlain(root, symbol)
             DataSource.FUNDDB_DIRECT
         } catch (_: Exception) {
             null
         }
     }
 
-    private suspend fun parseFundDbPlain(plain: String, symbol: Symbol) {
-        // 轻量解析，避免 Moshi 动态类型坑：只抽 categories + 前两条 series
-        val data = org.json.JSONObject(plain).getJSONObject("data")
+    private suspend fun parseFundDbPlain(root: org.json.JSONObject, symbol: Symbol) {
+        // 明文结构：{data:{xAxis:{categories},series:[{恐惧贪婪},{大盘指数}]}}
+        val data = root.getJSONObject("data")
         val cats = data.getJSONObject("xAxis").getJSONArray("categories")
         val series = data.getJSONArray("series")
         val fearArr = series.optJSONObject(0)?.optJSONArray("data")

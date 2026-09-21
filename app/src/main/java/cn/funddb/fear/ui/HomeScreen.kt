@@ -153,7 +153,7 @@ fun HomeScreen(vm: FearViewModel) {
                 }
                 if (state.symbol == Symbol.HS300) {
                     Text(
-                        "沪深300口径待直连激活，暂与上证同源（A股统一序列）",
+                        "沪深300为官方独立口径（直连）；降级时暂与上证同源",
                         fontSize = 11.sp,
                         color = Color.Gray,
                     )

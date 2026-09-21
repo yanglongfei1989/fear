@@ -1,6 +1,5 @@
 package cn.funddb.fear.data.api
 
-import cn.funddb.fear.data.model.Symbol
 import com.squareup.moshi.Json
 import com.squareup.moshi.JsonClass
 import com.squareup.moshi.Moshi
@@ -12,8 +11,6 @@ import retrofit2.converter.moshi.MoshiConverterFactory
 import retrofit2.http.Body
 import retrofit2.http.GET
 import retrofit2.http.POST
-import okhttp3.MediaType.Companion.toMediaType
-import okhttp3.RequestBody.Companion.toRequestBody
 import java.util.concurrent.TimeUnit
 
 // ---------- 开源镜像（A股恐惧贪婪，主数据源） ----------
@@ -66,25 +63,13 @@ object MirrorFetcher {
 private const val FUNDDB_HOST = "https://api.jiucaishuo.com/"
 
 interface FundDbApi {
-    /** 恐惧贪婪主接口（is_jm 加密，需签名+AES，见 FundDbCrypto）。返回裸字符串自行处理。 */
+    /** 恐惧贪婪主接口（is_jm 加密，请求体由 FundDbCrypto.buildSignedBody 构造）。 */
     @POST("v2/kjtl/kjtlconnect")
     suspend fun kjtlConnect(@Body body: okhttp3.RequestBody): retrofit2.Response<okhttp3.ResponseBody>
 
-    /** 恐惧贪婪 6 大因子名（明文，无需签名）。 */
+    /** 恐惧贪婪 6 大因子名（明文）。 */
     @POST("v2/kjtl/getalltypes")
     suspend fun kjtlTypes(@Body body: okhttp3.RequestBody): retrofit2.Response<okhttp3.ResponseBody>
-
-    companion object {
-        fun bodyOf(symbol: Symbol): okhttp3.RequestBody {
-            val json = org.json.JSONObject()
-                .put("gu_code", symbol.guCode)
-                .put("type", "h5")
-                .put("version", "2.4.5")
-                .put("act_time", System.currentTimeMillis())
-                .toString()
-            return json.toRequestBody("application/json; charset=utf-8".toMediaType())
-        }
-    }
 }
 
 object ApiProvider {
