@@ -24,13 +24,26 @@ const val IMMEDIATE_WORK_NAME = "fear-immediate-refresh"
 /** 每小时拉取一次并刷新全部桌面组件。Doze 下允许 ±10min 漂移（系统行为）。 */
 class RefreshWorker(ctx: Context, params: WorkerParameters) : CoroutineWorker(ctx, params) {
     override suspend fun doWork(): Result {
+        markAttempt(applicationContext)
         return try {
             FearRepository(applicationContext).refresh()
             FearWidget().updateAll(applicationContext)
+            markSuccess(applicationContext)
             Result.success()
         } catch (e: Exception) {
             if (runAttemptCount < 3) Result.retry() else Result.failure()
         }
+    }
+
+    private fun prefs(context: Context) =
+        context.getSharedPreferences("fear_prefs", Context.MODE_PRIVATE)
+
+    private fun markAttempt(context: Context) {
+        prefs(context).edit().putLong("last_worker_attempt", System.currentTimeMillis()).apply()
+    }
+
+    private fun markSuccess(context: Context) {
+        prefs(context).edit().putLong("last_worker_run", System.currentTimeMillis()).apply()
     }
 }
 

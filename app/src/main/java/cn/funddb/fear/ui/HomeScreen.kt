@@ -97,12 +97,56 @@ data class HomeUiState(
     val rings: List<PastRing> = emptyList(),
     val range: Range = Range.Y1,
     val error: String? = null,
+    val batteryIgnored: Boolean = true,
+    val workerStatus: String = "",
 )
 
 class FearViewModel(app: Application) : AndroidViewModel(app) {
     private val repo = FearRepository(app)
     private val _state = MutableStateFlow(HomeUiState())
     val state: StateFlow<HomeUiState> = _state
+
+    val isXiaomi: Boolean
+        get() = cn.funddb.fear.util.BatteryOptimizer.isXiaomi
+
+    fun requestIgnoreBattery() {
+        cn.funddb.fear.util.BatteryOptimizer.requestIgnoreBatteryOptimizations(getApplication())
+    }
+
+    fun openAutoStart() {
+        cn.funddb.fear.util.BatteryOptimizer.openAutoStartSettings(getApplication())
+    }
+
+    private fun batteryIgnoredNow(): Boolean =
+        cn.funddb.fear.util.BatteryOptimizer.isIgnoringBatteryOptimizations(getApplication())
+
+    private fun workerStatusNow(): String {
+        return try {
+            val infos = androidx.work.WorkManager.getInstance(getApplication())
+                .getWorkInfosForUniqueWork(cn.funddb.fear.data.worker.HOURLY_WORK_NAME)
+                .get(5, java.util.concurrent.TimeUnit.SECONDS)
+            val state = infos.firstOrNull()?.state?.name ?: "未排期"
+            val stateCn = when (state) {
+                "ENQUEUED" -> "排期中"
+                "RUNNING" -> "运行中"
+                "SUCCEEDED" -> "已完成"
+                "FAILED" -> "失败"
+                "BLOCKED" -> "被阻塞"
+                "CANCELLED" -> "已取消"
+                else -> state
+            }
+            val prefs = getApplication<Application>()
+                .getSharedPreferences("fear_prefs", android.content.Context.MODE_PRIVATE)
+            val lastOk = prefs.getLong("last_worker_run", 0L)
+            val lastTry = prefs.getLong("last_worker_attempt", 0L)
+            val fmt = java.text.SimpleDateFormat("MM-dd HH:mm", java.util.Locale.getDefault())
+            val okStr = if (lastOk == 0L) "从未成功" else fmt.format(java.util.Date(lastOk))
+            val tryStr = if (lastTry == 0L) "从未调度" else fmt.format(java.util.Date(lastTry))
+            "后台任务：$stateCn · 成功：$okStr · 调度：$tryStr"
+        } catch (_: Exception) {
+            "后台任务：查询失败"
+        }
+    }
 
     init {
         load()
@@ -119,9 +163,17 @@ class FearViewModel(app: Application) : AndroidViewModel(app) {
                     latest = repo.latest(),
                     history = repo.history(),
                     rings = repo.rings(),
+                    batteryIgnored = batteryIgnoredNow(),
+                    workerStatus = workerStatusNow(),
                 )
             } catch (e: Exception) {
-                _state.value = s.copy(loading = false, refreshing = false, error = "加载失败：${e.message}")
+                _state.value = s.copy(
+                    loading = false,
+                    refreshing = false,
+                    error = "加载失败：${e.message}",
+                    batteryIgnored = batteryIgnoredNow(),
+                    workerStatus = workerStatusNow(),
+                )
             }
         }
     }
@@ -183,6 +235,10 @@ fun HomeScreen(vm: FearViewModel) {
                 Spacer(Modifier.height(48.dp))
                 CircularProgressIndicator()
             } else {
+                if (!state.batteryIgnored) {
+                    BatteryWarningCard(vm)
+                    Spacer(Modifier.height(12.dp))
+                }
                 GaugeCard(state.latest)
                 Spacer(Modifier.height(12.dp))
                 AttrRow(state.latest)
@@ -205,6 +261,15 @@ fun HomeScreen(vm: FearViewModel) {
                 color = Color.Gray,
                 textAlign = TextAlign.Center,
             )
+            if (state.workerStatus.isNotEmpty()) {
+                Spacer(Modifier.height(4.dp))
+                Text(
+                    state.workerStatus,
+                    fontSize = 10.sp,
+                    color = Color.Gray,
+                    textAlign = TextAlign.Center,
+                )
+            }
             Spacer(Modifier.height(8.dp))
         }
     }
@@ -574,4 +639,46 @@ private fun ringColor(ring: PastRing): Color {
         }
     }
     return emotionColor(ring.emotion)
+}
+
+/** 电池优化警告卡：未加白名单时提示，避免后台任务被冻结。 */
+@Composable
+private fun BatteryWarningCard(vm: FearViewModel) {
+    Card(
+        modifier = Modifier.fillMaxWidth(),
+        shape = RoundedCornerShape(16.dp),
+        colors = CardDefaults.cardColors(containerColor = Color(0xFF2A1F17)),
+    ) {
+        Column(Modifier.padding(14.dp)) {
+            Text(
+                "⚠️ 为保证桌面小组件每小时自动刷新，请允许后台运行",
+                fontSize = 13.sp,
+                fontWeight = FontWeight.Medium,
+                color = Color(0xFFFF9F43),
+            )
+            Spacer(Modifier.height(6.dp))
+            Text(
+                "系统省电策略可能会冻结后台任务导致小组件停止更新。建议解除电池优化，并开启自启动。",
+                fontSize = 11.sp,
+                color = Muted,
+            )
+            Spacer(Modifier.height(10.dp))
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                Button(
+                    onClick = { vm.requestIgnoreBattery() },
+                    modifier = Modifier.weight(1f),
+                ) {
+                    Text("解除电池优化", fontSize = 12.sp)
+                }
+                if (vm.isXiaomi) {
+                    Button(
+                        onClick = { vm.openAutoStart() },
+                        modifier = Modifier.weight(1f),
+                    ) {
+                        Text("开启自启动", fontSize = 12.sp)
+                    }
+                }
+            }
+        }
+    }
 }
