@@ -31,6 +31,7 @@ import androidx.glance.text.TextStyle
 import androidx.glance.unit.ColorProvider
 import cn.funddb.fear.data.model.Emotion
 import cn.funddb.fear.data.repo.FearRepository
+import cn.funddb.fear.data.worker.triggerImmediateRefresh
 import cn.funddb.fear.ui.MainActivity
 import java.text.SimpleDateFormat
 import java.util.Date
@@ -129,4 +130,10 @@ class FearWidget : GlanceAppWidget() {
 
 class FearWidgetReceiver : GlanceAppWidgetReceiver() {
     override val glanceAppWidget: GlanceAppWidget = FearWidget()
+
+    override fun onEnabled(context: Context) {
+        super.onEnabled(context)
+        // 用户首次添加桌面组件时，立即触发一次后台拉取并渲染
+        triggerImmediateRefresh(context)
+    }
 }
