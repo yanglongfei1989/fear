@@ -2,6 +2,7 @@ package cn.funddb.fear.ui
 
 import android.app.Application
 import androidx.compose.foundation.Canvas
+import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -37,6 +38,9 @@ import androidx.compose.material3.TopAppBarDefaults
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.geometry.Offset
@@ -47,6 +51,7 @@ import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.graphics.StrokeJoin
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.graphics.lerp
+import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
@@ -66,6 +71,7 @@ import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
 import kotlin.math.cos
+import kotlin.math.roundToInt
 import kotlin.math.sin
 
 private val Bg = Color(0xFF0E1116)
@@ -432,13 +438,30 @@ private fun HistoryCard(state: HomeUiState, onRange: (Range) -> Unit) {
                 .filter { it.fear != null }
                 .takeLast(if (state.range.days == Int.MAX_VALUE) Int.MAX_VALUE else state.range.days)
             if (points.size >= 2) {
-                FearChart(points = points, modifier = Modifier.fillMaxWidth().height(200.dp))
-                Spacer(Modifier.height(4.dp))
-                Text(
-                    "${points.first().date} ~ ${points.last().date}（${points.size}个交易日）",
-                    fontSize = 11.sp,
-                    color = Color.Gray,
+                var selectedIdx by remember(points) { mutableStateOf<Int?>(null) }
+                FearChart(
+                    points = points,
+                    selectedIndex = selectedIdx,
+                    onSelectIndex = { selectedIdx = if (selectedIdx == it) null else it },
+                    modifier = Modifier.fillMaxWidth().height(200.dp),
                 )
+                Spacer(Modifier.height(4.dp))
+                val sel = selectedIdx?.let { points.getOrNull(it) }
+                if (sel?.fear != null) {
+                    val se = Emotion.of(sel.fear)
+                    Text(
+                        "${sel.date} · ${String.format(Locale.US, "%.1f", sel.fear)} · ${se.label}",
+                        fontSize = 13.sp,
+                        fontWeight = FontWeight.Medium,
+                        color = emotionColor(se),
+                    )
+                } else {
+                    Text(
+                        "${points.first().date} ~ ${points.last().date}（${points.size}个交易日）· 点击曲线查看单日",
+                        fontSize = 11.sp,
+                        color = Color.Gray,
+                    )
+                }
             } else {
                 Text("暂无历史数据", fontSize = 13.sp, color = Muted)
             }
@@ -446,10 +469,27 @@ private fun HistoryCard(state: HomeUiState, onRange: (Range) -> Unit) {
     }
 }
 
-/** 恐惧贪婪历史折线：渐变描边 + 底部填充 + 情绪分界线。 */
+/** 恐惧贪婪历史折线：渐变描边 + 底部填充 + 情绪分界线，点击选中单日。 */
 @Composable
-private fun FearChart(points: List<FearPoint>, modifier: Modifier = Modifier) {
-    Canvas(modifier = modifier) {
+private fun FearChart(
+    points: List<FearPoint>,
+    selectedIndex: Int?,
+    onSelectIndex: (Int) -> Unit,
+    modifier: Modifier = Modifier,
+) {
+    Canvas(
+        modifier = modifier.pointerInput(points) {
+            detectTapGestures { tap ->
+                // 与绘制区同坐标：左右各 8px 内边距
+                val left = 8f
+                val right = size.width - 8f
+                if (tap.x < left - 24f || tap.x > right + 24f) return@detectTapGestures
+                val idx = ((tap.x - left) / (right - left) * (points.size - 1)).roundToInt()
+                    .coerceIn(0, points.size - 1)
+                onSelectIndex(idx)
+            }
+        },
+    ) {
         val vals = points.map { it.fear ?: 50.0 }
         val left = 8f
         val right = size.width - 8f
@@ -496,6 +536,21 @@ private fun FearChart(points: List<FearPoint>, modifier: Modifier = Modifier) {
         )
         drawCircle(Color.White, radius = 7f, center = Offset(x(vals.size - 1), y(vals.last())))
         drawCircle(FearBlue, radius = 4.5f, center = Offset(x(vals.size - 1), y(vals.last())))
+        // 选中态：竖向准星 + 高亮点
+        val selIdx = selectedIndex?.takeIf { it in vals.indices }
+        if (selIdx != null) {
+            val sx = x(selIdx)
+            val sy = y(vals[selIdx])
+            drawLine(
+                Color.White.copy(alpha = 0.45f),
+                Offset(sx, top),
+                Offset(sx, bottom),
+                strokeWidth = 2f,
+                pathEffect = androidx.compose.ui.graphics.PathEffect.dashPathEffect(floatArrayOf(10f, 8f)),
+            )
+            drawCircle(Color.White, radius = 10f, center = Offset(sx, sy))
+            drawCircle(emotionColor(Emotion.of(vals[selIdx])), radius = 7f, center = Offset(sx, sy))
+        }
     }
 }
 
