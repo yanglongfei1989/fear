@@ -2,7 +2,9 @@ package cn.funddb.fear.ui
 
 import android.app.Application
 import androidx.compose.foundation.Canvas
-import androidx.compose.foundation.gestures.detectTapGestures
+import androidx.compose.foundation.gestures.awaitEachGesture
+import androidx.compose.foundation.gestures.awaitFirstDown
+import androidx.compose.foundation.gestures.drag
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -507,7 +509,7 @@ private fun HistoryCard(state: HomeUiState, onRange: (Range) -> Unit) {
                 FearChart(
                     points = points,
                     selectedIndex = selectedIdx,
-                    onSelectIndex = { selectedIdx = if (selectedIdx == it) null else it },
+                    onSelectIndex = { selectedIdx = it },
                     modifier = Modifier.fillMaxWidth().height(200.dp),
                 )
                 Spacer(Modifier.height(4.dp))
@@ -522,7 +524,7 @@ private fun HistoryCard(state: HomeUiState, onRange: (Range) -> Unit) {
                     )
                 } else {
                     Text(
-                        "${points.first().date} ~ ${points.last().date}（${points.size}个交易日）· 点击曲线查看单日",
+                        "${points.first().date} ~ ${points.last().date}（${points.size}个交易日）· 按住左右滑动查看单日",
                         fontSize = 11.sp,
                         color = Color.Gray,
                     )
@@ -534,7 +536,7 @@ private fun HistoryCard(state: HomeUiState, onRange: (Range) -> Unit) {
     }
 }
 
-/** 恐惧贪婪历史折线：渐变描边 + 底部填充 + 情绪分界线，点击选中单日。 */
+/** 恐惧贪婪历史折线：渐变描边 + 底部填充 + 情绪分界线，按住滑动选中单日。 */
 @Composable
 private fun FearChart(
     points: List<FearPoint>,
@@ -544,14 +546,14 @@ private fun FearChart(
 ) {
     Canvas(
         modifier = modifier.pointerInput(points) {
-            detectTapGestures { tap ->
-                // 与绘制区同坐标：左右各 8px 内边距
-                val left = 8f
-                val right = size.width - 8f
-                if (tap.x < left - 24f || tap.x > right + 24f) return@detectTapGestures
-                val idx = ((tap.x - left) / (right - left) * (points.size - 1)).roundToInt()
-                    .coerceIn(0, points.size - 1)
-                onSelectIndex(idx)
+            // 按住即选中，左右拖动连续切换（与绘制区同坐标系）
+            awaitEachGesture {
+                val down = awaitFirstDown()
+                onSelectIndex(idxOf(down.position.x, size.width.toFloat(), points.size))
+                drag(down.id) { change ->
+                    onSelectIndex(idxOf(change.position.x, size.width.toFloat(), points.size))
+                    change.consume()
+                }
             }
         },
     ) {
@@ -617,6 +619,15 @@ private fun FearChart(
             drawCircle(emotionColor(Emotion.of(vals[selIdx])), radius = 7f, center = Offset(sx, sy))
         }
     }
+}
+
+/** 把触摸 x 坐标映射到最近的数据点下标（与绘制区左右 8px 内边距一致）。 */
+private fun idxOf(xPx: Float, widthPx: Float, n: Int): Int {
+    if (n <= 1) return 0
+    val left = 8f
+    val right = widthPx - 8f
+    if (right <= left) return 0
+    return ((xPx - left) / (right - left) * (n - 1)).roundToInt().coerceIn(0, n - 1)
 }
 
 private fun emotionColor(e: Emotion): Color = when (e) {
