@@ -26,9 +26,15 @@ class RefreshWorker(ctx: Context, params: WorkerParameters) : CoroutineWorker(ct
     override suspend fun doWork(): Result {
         markAttempt(applicationContext)
         return try {
-            FearRepository(applicationContext).refresh()
+            val repo = FearRepository(applicationContext)
+            repo.refresh()
             FearWidget().updateAll(applicationContext)
             markSuccess(applicationContext)
+            runCatching {
+                val latest = repo.latest()
+                cn.funddb.fear.notify.Notifier.evaluateAlerts(applicationContext, latest)
+                cn.funddb.fear.notify.Notifier.evaluateMorning(applicationContext, latest)
+            }
             Result.success()
         } catch (e: Exception) {
             if (runAttemptCount < 3) Result.retry() else Result.failure()

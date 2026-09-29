@@ -1,6 +1,11 @@
 package cn.funddb.fear.ui
 
 import android.app.Application
+import android.Manifest
+import android.content.pm.PackageManager
+import android.os.Build
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.animation.core.FastOutSlowInEasing
 import androidx.compose.animation.core.Spring
 import androidx.compose.animation.core.animateFloatAsState
@@ -38,11 +43,13 @@ import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Text
 import androidx.compose.material3.TopAppBar
 import androidx.compose.material3.TopAppBarDefaults
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -60,10 +67,14 @@ import androidx.compose.ui.graphics.StrokeJoin
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.graphics.lerp
 import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.platform.LocalContext
+import androidx.compose.foundation.text.KeyboardOptions
+import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.core.content.ContextCompat
 import androidx.glance.appwidget.updateAll
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
@@ -208,6 +219,18 @@ class FearViewModel(app: Application) : AndroidViewModel(app) {
 @Composable
 fun HomeScreen(vm: FearViewModel) {
     val state by vm.state.collectAsState()
+    val ctx = LocalContext.current
+    val permLauncher = rememberLauncherForActivityResult(
+        ActivityResultContracts.RequestPermission(),
+    ) { }
+    LaunchedEffect(Unit) {
+        if (Build.VERSION.SDK_INT >= 33 &&
+            ContextCompat.checkSelfPermission(ctx, Manifest.permission.POST_NOTIFICATIONS) !=
+            PackageManager.PERMISSION_GRANTED
+        ) {
+            permLauncher.launch(Manifest.permission.POST_NOTIFICATIONS)
+        }
+    }
     Scaffold(
         containerColor = Bg,
         topBar = {
@@ -254,6 +277,8 @@ fun HomeScreen(vm: FearViewModel) {
                 RingsCard(state.rings)
                 Spacer(Modifier.height(12.dp))
                 HistoryCard(state) { vm.selectRange(it) }
+                Spacer(Modifier.height(12.dp))
+                NotifySettingsCard()
             }
 
             state.error?.let {
@@ -761,6 +786,75 @@ private fun BatteryWarningCard(vm: FearViewModel) {
                         Text("开启自启动", fontSize = 12.sp)
                     }
                 }
+            }
+        }
+    }
+}
+
+/** 提醒设置：阈值告警上下限（默认 90/10，与网页订阅一致）。 */
+@Composable
+private fun NotifySettingsCard() {
+    val ctx = LocalContext.current
+    val notifier = remember { cn.funddb.fear.notify.Notifier }
+    var highText by remember {
+        mutableStateOf(notifier.highThreshold(ctx).toInt().toString())
+    }
+    var lowText by remember {
+        mutableStateOf(notifier.lowThreshold(ctx).toInt().toString())
+    }
+    var savedTick by remember { mutableStateOf(0) }
+    Card(
+        modifier = Modifier.fillMaxWidth(),
+        shape = RoundedCornerShape(20.dp),
+        colors = CardDefaults.cardColors(containerColor = CardBg),
+    ) {
+        Column(Modifier.padding(16.dp)) {
+            Text("提醒设置", fontSize = 15.sp, fontWeight = FontWeight.Medium, color = Color.White)
+            Spacer(Modifier.height(4.dp))
+            Text(
+                "指数进入极端区间时推送一次；每天 9 点后推送交易日早报（周末不打扰）",
+                fontSize = 11.sp,
+                color = Muted,
+            )
+            Spacer(Modifier.height(10.dp))
+            Row(
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                OutlinedTextField(
+                    value = highText,
+                    onValueChange = { highText = it.filter { c -> c.isDigit() }.take(3) },
+                    label = { Text("贪婪告警 ≥", fontSize = 11.sp) },
+                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
+                    singleLine = true,
+                    modifier = Modifier.weight(1f),
+                )
+                OutlinedTextField(
+                    value = lowText,
+                    onValueChange = { lowText = it.filter { c -> c.isDigit() }.take(3) },
+                    label = { Text("恐惧告警 ≤", fontSize = 11.sp) },
+                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
+                    singleLine = true,
+                    modifier = Modifier.weight(1f),
+                )
+                Button(
+                    onClick = {
+                        val hi = highText.toIntOrNull()?.coerceIn(1, 100)
+                            ?: notifier.highThreshold(ctx).toInt()
+                        val lo = lowText.toIntOrNull()?.coerceIn(0, 99)
+                            ?: notifier.lowThreshold(ctx).toInt()
+                        highText = hi.toString()
+                        lowText = lo.toString()
+                        notifier.saveThresholds(ctx, hi.toFloat(), lo.toFloat())
+                        savedTick++
+                    },
+                ) {
+                    Text("保存", fontSize = 12.sp)
+                }
+            }
+            if (savedTick > 0) {
+                Spacer(Modifier.height(4.dp))
+                Text("已保存：≥$highText 贪婪告警，≤$lowText 恐惧告警", fontSize = 11.sp, color = FearBlue)
             }
         }
     }
