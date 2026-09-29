@@ -6,10 +6,12 @@ import cn.funddb.fear.data.api.MirrorFetcher
 import cn.funddb.fear.data.crypto.FundDbCrypto
 import cn.funddb.fear.data.db.FearDatabase
 import cn.funddb.fear.data.db.FearEntity
+import cn.funddb.fear.data.db.FearFactorEntity
 import cn.funddb.fear.data.db.FearMeta
 import cn.funddb.fear.data.model.DEFAULT_SYMBOL
 import cn.funddb.fear.data.model.DataSource
 import cn.funddb.fear.data.model.Emotion
+import cn.funddb.fear.data.model.FearFactor
 import cn.funddb.fear.data.model.FearLatest
 import cn.funddb.fear.data.model.FearPoint
 import cn.funddb.fear.data.model.PastRing
@@ -58,6 +60,101 @@ class FearRepository(private val context: Context) {
     suspend fun rings(): List<PastRing> = withContext(Dispatchers.IO) {
         if (dao.meta(sym) == null) refresh()
         parseRings(dao.meta(sym)?.ringsJson).ifEmpty { fallbackRings() }
+    }
+
+    /**
+     * 六大因子：仅 App 打开时拉取（不进每小时任务，省电），失败用缓存。
+     * getalltypes 取 id/短名（明文），getlist 逐个取明细（加密）。
+     */
+    suspend fun factors(): List<FearFactor> = withContext(Dispatchers.IO) {
+        runCatching { refreshFactors() }
+        dao.factors().map { e ->
+            FearFactor(
+                id = e.id,
+                name = e.name,
+                title = e.title,
+                statusName = e.statusName,
+                statusColorHex = e.statusColorHex,
+                unit = e.unit,
+                points = parseFactorPoints(e.pointsJson),
+            )
+        }
+    }
+
+    private suspend fun refreshFactors() {
+        val api = ApiProvider.funddb
+        val typesResp = api.kjtlTypes(FundDbCrypto.buildSignedEmptyBody())
+        val typesText = typesResp.body()?.string()?.trim() ?: throw IllegalStateException("因子列表空响应")
+        val typesRoot = try {
+            JSONObject(FundDbCrypto.extractJson(typesText))
+        } catch (_: Exception) {
+            FundDbCrypto.decryptToJson(typesText) ?: throw IllegalStateException("因子列表解析失败")
+        }
+        if (typesRoot.optInt("code", -1) != 0) throw IllegalStateException("因子列表 code != 0")
+        val arr = typesRoot.optJSONArray("data") ?: throw IllegalStateException("因子列表无数据")
+        val now = System.currentTimeMillis()
+        val rows = (0 until arr.length()).mapNotNull { i ->
+            val t = arr.optJSONObject(i) ?: return@mapNotNull null
+            val id = t.optInt("id", -1).takeIf { it >= 0 } ?: return@mapNotNull null
+            fetchOneFactor(api, id, t.optString("name", ""), now)
+        }
+        if (rows.isNotEmpty()) dao.upsertFactors(rows)
+    }
+
+    private suspend fun fetchOneFactor(
+        api: cn.funddb.fear.data.api.FundDbApi,
+        id: Int,
+        shortName: String,
+        now: Long,
+    ): FearFactorEntity? {
+        return try {
+            val resp = api.kjtlFactorList(FundDbCrypto.buildSignedMapBody(mapOf("id" to id)))
+            val blob = resp.body()?.string()?.trim()?.removeSurrounding("\"") ?: return null
+            if (blob.length < 100) return null
+            val root = FundDbCrypto.decryptToJson(blob) ?: return null
+            if (root.optInt("code", -1) != 0) return null
+            val d = root.getJSONObject("data")
+            val canvas = d.optJSONObject("canvas_data") ?: return null
+            val series = canvas.optJSONArray("series")?.optJSONObject(0)
+            val pts = series?.optJSONArray("data")
+            val pairs = ArrayList<Pair<Long, Double>>(pts?.length() ?: 0)
+            if (pts != null) {
+                for (j in 0 until pts.length()) {
+                    val p = pts.optJSONArray(j) ?: continue
+                    val v = p.optDouble(1, Double.NaN)
+                    if (!v.isNaN()) pairs.add(Pair(p.optLong(0), v))
+                }
+            }
+            if (pairs.isEmpty()) return null
+            val pointsJson = JSONArray(pairs.map { (ts, v) ->
+                JSONArray().put(ts).put(v)
+            }).toString()
+            FearFactorEntity(
+                id = id,
+                name = shortName.ifBlank { d.optString("title", "因子$id") },
+                title = d.optString("title", ""),
+                statusName = d.optString("status_name", ""),
+                statusColorHex = d.optString("status_color", ""),
+                unit = canvas.optString("y_company", ""),
+                pointsJson = pointsJson,
+                fetchedAt = now,
+            )
+        } catch (_: Exception) {
+            null
+        }
+    }
+
+    private fun parseFactorPoints(json: String?): List<Pair<Long, Double>> {
+        if (json.isNullOrBlank()) return emptyList()
+        return try {
+            val arr = JSONArray(json)
+            (0 until arr.length()).mapNotNull { i ->
+                val p = arr.optJSONArray(i) ?: return@mapNotNull null
+                Pair(p.optLong(0), p.optDouble(1, Double.NaN)).takeIf { !it.second.isNaN() }
+            }
+        } catch (_: Exception) {
+            emptyList()
+        }
     }
 
     /** 往期四环降级：用历史序列按交易日偏移估算（1/5/22/252）。 */

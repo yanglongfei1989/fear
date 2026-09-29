@@ -41,6 +41,12 @@ interface FearDao {
 
     @Query("SELECT * FROM fear_meta WHERE symbol = :symbol LIMIT 1")
     suspend fun meta(symbol: String): FearMeta?
+
+    @Insert(onConflict = OnConflictStrategy.REPLACE)
+    suspend fun upsertFactors(rows: List<FearFactorEntity>)
+
+    @Query("SELECT * FROM fear_factor ORDER BY id ASC")
+    suspend fun factors(): List<FearFactorEntity>
 }
 
 /** 官方数值面板：当前值/属性/往期四环（getbasedata 下发，日更）。 */
@@ -55,7 +61,25 @@ data class FearMeta(
     val fetchedAt: Long,
 )
 
-@Database(entities = [FearEntity::class, FearMeta::class], version = 2, exportSchema = false)
+/** 六大因子缓存（getlist 下发，日更，打开 App 时刷新）。 */
+@Entity(tableName = "fear_factor")
+data class FearFactorEntity(
+    @PrimaryKey val id: Int,
+    val name: String,
+    val title: String,
+    val statusName: String,
+    val statusColorHex: String,
+    val unit: String,
+    /** [[ts, value], ...] JSON */
+    val pointsJson: String,
+    val fetchedAt: Long,
+)
+
+@Database(
+    entities = [FearEntity::class, FearMeta::class, FearFactorEntity::class],
+    version = 3,
+    exportSchema = false,
+)
 abstract class FearDatabase : androidx.room.RoomDatabase() {
     abstract fun fearDao(): FearDao
 

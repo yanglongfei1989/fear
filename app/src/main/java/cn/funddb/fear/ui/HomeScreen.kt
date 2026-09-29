@@ -79,6 +79,7 @@ import androidx.glance.appwidget.updateAll
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import cn.funddb.fear.data.model.Emotion
+import cn.funddb.fear.data.model.FearFactor
 import cn.funddb.fear.data.model.FearLatest
 import cn.funddb.fear.data.model.FearPoint
 import cn.funddb.fear.data.model.PastRing
@@ -114,6 +115,7 @@ data class HomeUiState(
     val latest: FearLatest? = null,
     val history: List<FearPoint> = emptyList(),
     val rings: List<PastRing> = emptyList(),
+    val factors: List<FearFactor> = emptyList(),
     val range: Range = Range.Y1,
     val error: String? = null,
     val batteryIgnored: Boolean = true,
@@ -182,6 +184,7 @@ class FearViewModel(app: Application) : AndroidViewModel(app) {
                     latest = repo.latest(),
                     history = repo.history(),
                     rings = repo.rings(),
+                    factors = repo.factors(),
                     batteryIgnored = batteryIgnoredNow(),
                     workerStatus = workerStatusNow(),
                 )
@@ -277,6 +280,8 @@ fun HomeScreen(vm: FearViewModel) {
                 RingsCard(state.rings)
                 Spacer(Modifier.height(12.dp))
                 HistoryCard(state) { vm.selectRange(it) }
+                Spacer(Modifier.height(12.dp))
+                FactorsCard(state.factors)
                 Spacer(Modifier.height(12.dp))
                 NotifySettingsCard()
             }
@@ -858,4 +863,107 @@ private fun NotifySettingsCard() {
             }
         }
     }
+}
+
+/** 六大因子：横滑列表，每项名称 + 最新值 + 状态 + 迷你走势。 */
+@Composable
+private fun FactorsCard(factors: List<FearFactor>) {
+    Card(
+        modifier = Modifier.fillMaxWidth(),
+        shape = RoundedCornerShape(20.dp),
+        colors = CardDefaults.cardColors(containerColor = CardBg),
+    ) {
+        Column(Modifier.padding(16.dp)) {
+            Text("六大因子", fontSize = 15.sp, fontWeight = FontWeight.Medium, color = Color.White)
+            Spacer(Modifier.height(4.dp))
+            Text("谁在推动情绪变化", fontSize = 11.sp, color = Muted)
+            Spacer(Modifier.height(10.dp))
+            if (factors.isEmpty()) {
+                Text("暂无因子数据，下拉刷新试试", fontSize = 13.sp, color = Muted)
+            } else {
+                Row(
+                    modifier = Modifier.fillMaxWidth()
+                        .horizontalScroll(rememberScrollState()),
+                    horizontalArrangement = Arrangement.spacedBy(10.dp),
+                ) {
+                    factors.forEach { FactorItem(it) }
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun FactorItem(f: FearFactor) {
+    val c = parseHexColor(f.statusColorHex, FearBlue)
+    Card(
+        modifier = Modifier.width(148.dp),
+        shape = RoundedCornerShape(14.dp),
+        colors = CardDefaults.cardColors(containerColor = Color(0xFF1E2632)),
+    ) {
+        Column(Modifier.padding(10.dp)) {
+            Text(f.name.ifBlank { f.title }, fontSize = 13.sp, fontWeight = FontWeight.Medium, color = Color.White)
+            Spacer(Modifier.height(2.dp))
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Text(
+                    text = f.latestValue?.let { String.format(Locale.US, "%.2f", it) } ?: "--",
+                    fontSize = 16.sp,
+                    fontWeight = FontWeight.Bold,
+                    color = c,
+                )
+                if (f.unit.isNotBlank()) {
+                    Spacer(Modifier.width(2.dp))
+                    Text(f.unit, fontSize = 10.sp, color = Muted)
+                }
+            }
+            Text(
+                f.statusName.ifBlank { "—" },
+                fontSize = 11.sp,
+                color = c,
+            )
+            Spacer(Modifier.height(6.dp))
+            FactorSparkline(points = f.points.map { it.second }, color = c)
+        }
+    }
+}
+
+@Composable
+private fun FactorSparkline(points: List<Double>, color: Color) {
+    val vals = remember(points) {
+        val clean = points.filterNot { it.isNaN() }
+        if (clean.size <= 60) clean else clean.filterIndexed { i, _ -> i % (clean.size / 60 + 1) == 0 }
+    }
+    Canvas(modifier = Modifier.fillMaxWidth().height(44.dp)) {
+        if (vals.size < 2) return@Canvas
+        val lo = vals.min()
+        val hi = vals.max()
+        val span = (hi - lo).takeIf { it > 0 } ?: 1.0
+        val left = 2f
+        val right = size.width - 2f
+        val top = 4f
+        val bottom = size.height - 4f
+        fun x(i: Int) = left + (right - left) * i / (vals.size - 1)
+        fun y(v: Double) = (bottom - (bottom - top) * ((v - lo) / span)).toFloat()
+        val path = Path()
+        vals.forEachIndexed { i, v ->
+            if (i == 0) path.moveTo(x(i), y(v)) else path.lineTo(x(i), y(v))
+        }
+        drawPath(path, color, style = Stroke(width = 3.5f, cap = StrokeCap.Round, join = StrokeJoin.Round))
+        val lx = x(vals.size - 1)
+        val ly = y(vals.last())
+        drawCircle(Color.White, radius = 5f, center = Offset(lx, ly))
+        drawCircle(color, radius = 3f, center = Offset(lx, ly))
+    }
+}
+
+private fun parseHexColor(hex: String, fallback: Color): Color {
+    val h = hex.trim().trimStart('#')
+    if (h.length == 6 || h.length == 8) {
+        return try {
+            Color((if (h.length == 6) "FF$h" else h).toLong(16))
+        } catch (_: Exception) {
+            fallback
+        }
+    }
+    return fallback
 }

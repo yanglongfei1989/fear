@@ -77,6 +77,13 @@ interface FundDbApi {
     /** 恐惧贪婪 6 大因子名（明文）。 */
     @POST("v2/kjtl/getalltypes")
     suspend fun kjtlTypes(@Body body: okhttp3.RequestBody): retrofit2.Response<okhttp3.ResponseBody>
+
+    /**
+     * 单因子明细（is_jm 加密）：body={id}，id 取自 getalltypes。
+     * 明文形如 {data:{title,status_name,status_color,canvas_data:{y_company,series:[{color,name,data:[[ts,v]...]}]}}}。
+     */
+    @POST("v2/kjtl/getlist")
+    suspend fun kjtlFactorList(@Body body: okhttp3.RequestBody): retrofit2.Response<okhttp3.ResponseBody>
 }
 
 object ApiProvider {

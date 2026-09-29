@@ -63,6 +63,21 @@ data class PastRing(
     val colorHex: String,
 )
 
+/** 六大因子之一（getalltypes + getlist 下发）。 */
+data class FearFactor(
+    val id: Int,
+    val name: String,
+    val title: String,
+    val statusName: String,
+    val statusColorHex: String,
+    /** y 轴单位，如 % */
+    val unit: String,
+    /** (毫秒时间戳, 值)，升序 */
+    val points: List<Pair<Long, Double>>,
+) {
+    val latestValue: Double? get() = points.lastOrNull()?.second
+}
+
 /** 最新一条 + 环比变化 + 官方属性。 */
 data class FearLatest(
     val point: FearPoint,

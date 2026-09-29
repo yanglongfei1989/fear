@@ -46,6 +46,10 @@ object FundDbCrypto {
     /** 数值面板请求体：无参（fetch 层补 type/version）+ 签名，如 getbasedata。 */
     fun buildSignedEmptyBody(): RequestBody = signedBodyMap(emptyMap()).toRequestBody()
 
+    /** 通用签名请求体：额外明文字段 + fetch 层字段 + 签名，如 getlist({id})。 */
+    fun buildSignedMapBody(extra: Map<String, Any>): RequestBody =
+        signedBodyMap(extra).toRequestBody()
+
     /** 返回带签名的完整参数表（不含序列化），与线上 32/32 校验一致。 */
     fun signedBodyMap(extra: Map<String, Any>): Map<String, Any> {
         val base = linkedMapOf<String, Any>(
