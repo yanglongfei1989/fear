@@ -30,7 +30,10 @@ import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.DarkMode
+import androidx.compose.material.icons.filled.LightMode
 import androidx.compose.material.icons.filled.Refresh
+import androidx.compose.material.icons.filled.Share
 import androidx.compose.material3.AssistChip
 import androidx.compose.material3.AssistChipDefaults
 import androidx.compose.material3.Button
@@ -49,11 +52,14 @@ import androidx.compose.material3.Text
 import androidx.compose.material3.TopAppBar
 import androidx.compose.material3.TopAppBarDefaults
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
+import androidx.compose.runtime.compositionLocalOf
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -94,13 +100,49 @@ import kotlin.math.cos
 import kotlin.math.roundToInt
 import kotlin.math.sin
 
-private val Bg = Color(0xFF0E1116)
-private val CardBg = Color(0xFF161C24)
-private val Track = Color(0xFF232B36)
-private val Muted = Color(0xFF9AA4B2)
 private val FearBlue = Color(0xFF1890FF)
 private val GreedRed = Color(0xFFF5222D)
 private val MidPurple = Color(0xFF7B5CFF)
+private val NeutralGray = Color(0xFF9AA4B2)
+
+/** 深浅两套配色，情绪色（蓝/红）两套共用。 */
+data class Palette(
+    val bg: Color,
+    val card: Color,
+    val inner: Color,
+    val text: Color,
+    val muted: Color,
+    val track: Color,
+    val hub: Color,
+    val warnBg: Color,
+)
+
+private val DarkPalette = Palette(
+    bg = Color(0xFF0E1116),
+    card = Color(0xFF161C24),
+    inner = Color(0xFF1E2632),
+    text = Color.White,
+    muted = Color(0xFF9AA4B2),
+    track = Color(0xFF232B36),
+    hub = Color(0xFF2A3442),
+    warnBg = Color(0xFF2A1F17),
+)
+private val LightPalette = Palette(
+    bg = Color(0xFFF4F6F9),
+    card = Color.White,
+    inner = Color(0xFFE9EDF3),
+    text = Color(0xFF141A20),
+    muted = Color(0xFF67707C),
+    track = Color(0xFFE0E6ED),
+    hub = Color.White,
+    warnBg = Color(0xFFFFF3E2),
+)
+private val LocalPal = compositionLocalOf { DarkPalette }
+
+@Composable
+private fun pal() = LocalPal.current
+
+private fun palette(dark: Boolean) = if (dark) DarkPalette else LightPalette
 
 enum class Range(val label: String, val days: Int) {
     M3("近3月", 66),
@@ -120,6 +162,7 @@ data class HomeUiState(
     val error: String? = null,
     val batteryIgnored: Boolean = true,
     val workerStatus: String = "",
+    val isDark: Boolean = true,
 )
 
 class FearViewModel(app: Application) : AndroidViewModel(app) {
@@ -170,8 +213,19 @@ class FearViewModel(app: Application) : AndroidViewModel(app) {
     }
 
     init {
+        _state.value = _state.value.copy(isDark = prefs().getBoolean("dark_mode", true))
         load()
     }
+
+    fun toggleTheme() {
+        val v = !_state.value.isDark
+        prefs().edit().putBoolean("dark_mode", v).apply()
+        _state.value = _state.value.copy(isDark = v)
+    }
+
+    private fun prefs() = getApplication<Application>().getSharedPreferences(
+        "fear_prefs", android.content.Context.MODE_PRIVATE,
+    )
 
     fun load() {
         viewModelScope.launch {
@@ -234,8 +288,10 @@ fun HomeScreen(vm: FearViewModel) {
             permLauncher.launch(Manifest.permission.POST_NOTIFICATIONS)
         }
     }
+    val shareScope = rememberCoroutineScope()
+    CompositionLocalProvider(LocalPal provides palette(state.isDark)) {
     Scaffold(
-        containerColor = Bg,
+        containerColor = pal().bg,
         topBar = {
             TopAppBar(
                 title = {
@@ -244,16 +300,31 @@ fun HomeScreen(vm: FearViewModel) {
                         Text(
                             "更新时间 " + (state.latest?.currentTime ?: state.latest?.point?.date ?: "--"),
                             fontSize = 11.sp,
-                            color = Muted,
+                            color = pal().muted,
                         )
                     }
                 },
                 actions = {
+                    IconButton(onClick = {
+                        shareScope.launch(kotlinx.coroutines.Dispatchers.IO) {
+                            val bmp = cn.funddb.fear.share.SharePoster.render(state.latest, state.history)
+                            if (bmp != null) cn.funddb.fear.share.SharePoster.share(ctx, bmp)
+                        }
+                    }) {
+                        Icon(Icons.Filled.Share, contentDescription = "分享", tint = pal().text)
+                    }
+                    IconButton(onClick = { vm.toggleTheme() }) {
+                        Icon(
+                            if (state.isDark) Icons.Filled.LightMode else Icons.Filled.DarkMode,
+                            contentDescription = "切换主题",
+                            tint = pal().text,
+                        )
+                    }
                     IconButton(onClick = { vm.refresh() }) {
-                        Icon(Icons.Filled.Refresh, contentDescription = "刷新", tint = Color.White)
+                        Icon(Icons.Filled.Refresh, contentDescription = "刷新", tint = pal().text)
                     }
                 },
-                colors = TopAppBarDefaults.topAppBarColors(containerColor = Bg),
+                colors = TopAppBarDefaults.topAppBarColors(containerColor = pal().bg),
             )
             if (state.refreshing) {
                 LinearProgressIndicator(modifier = Modifier.fillMaxWidth())
@@ -270,20 +341,20 @@ fun HomeScreen(vm: FearViewModel) {
                 CircularProgressIndicator()
             } else {
                 if (!state.batteryIgnored) {
-                    BatteryWarningCard(vm)
+                    BatteryWarningCard(vm, state.isDark)
                     Spacer(Modifier.height(12.dp))
                 }
-                GaugeCard(state.latest)
+                GaugeCard(state.latest, state.isDark)
                 Spacer(Modifier.height(12.dp))
-                AttrRow(state.latest)
+                AttrRow(state.latest, state.isDark)
                 Spacer(Modifier.height(12.dp))
-                RingsCard(state.rings)
+                RingsCard(state.rings, state.isDark)
                 Spacer(Modifier.height(12.dp))
-                HistoryCard(state) { vm.selectRange(it) }
+                HistoryCard(state, state.isDark) { vm.selectRange(it) }
                 Spacer(Modifier.height(12.dp))
-                FactorsCard(state.factors)
+                FactorsCard(state.factors, state.isDark)
                 Spacer(Modifier.height(12.dp))
-                NotifySettingsCard()
+                NotifySettingsCard(state.isDark)
             }
 
             state.error?.let {
@@ -296,7 +367,7 @@ fun HomeScreen(vm: FearViewModel) {
             Text(
                 "桌面组件约每小时刷新 · 数据每日更新（交易日）\n数据仅供参考，不构成投资建议",
                 fontSize = 11.sp,
-                color = Color.Gray,
+                color = pal().muted,
                 textAlign = TextAlign.Center,
             )
             if (state.workerStatus.isNotEmpty()) {
@@ -304,18 +375,19 @@ fun HomeScreen(vm: FearViewModel) {
                 Text(
                     state.workerStatus,
                     fontSize = 10.sp,
-                    color = Color.Gray,
+                    color = pal().muted,
                     textAlign = TextAlign.Center,
                 )
             }
             Spacer(Modifier.height(8.dp))
         }
     }
+    }
 }
 
 /** 顶部仪表盘卡片：渐变弧 + 弹簧指针 + 滚动数字。 */
 @Composable
-private fun GaugeCard(latest: FearLatest?) {
+private fun GaugeCard(latest: FearLatest?, dark: Boolean) {
     val v = latest?.point?.fear
     val emotion = latest?.emotion ?: Emotion.of(v)
     // 数字：平滑滚动；指针：弹簧回弹
@@ -336,11 +408,11 @@ private fun GaugeCard(latest: FearLatest?) {
     Card(
         modifier = Modifier.fillMaxWidth(),
         shape = RoundedCornerShape(20.dp),
-        colors = CardDefaults.cardColors(containerColor = CardBg),
+        colors = CardDefaults.cardColors(containerColor = pal().card),
     ) {
         Column(Modifier.padding(top = 16.dp, start = 16.dp, end = 16.dp, bottom = 8.dp)) {
             Box(modifier = Modifier.fillMaxWidth().height(190.dp)) {
-                GaugeCanvas(value = needleV.toDouble())
+                GaugeCanvas(value = needleV.toDouble(), dark = dark)
                 Column(
                     modifier = Modifier.fillMaxSize().padding(bottom = 6.dp),
                     horizontalAlignment = Alignment.CenterHorizontally,
@@ -350,7 +422,7 @@ private fun GaugeCard(latest: FearLatest?) {
                         text = if (v == null || v.isNaN()) "--" else String.format(Locale.US, "%.0f", numV),
                         fontSize = 40.sp,
                         fontWeight = FontWeight.Bold,
-                        color = Color.White,
+                        color = pal().text,
                     )
                 }
             }
@@ -365,7 +437,8 @@ private fun GaugeCard(latest: FearLatest?) {
 }
 
 @Composable
-private fun GaugeCanvas(value: Double?) {
+private fun GaugeCanvas(value: Double?, dark: Boolean) {
+    val hub = palette(dark).hub
     Canvas(modifier = Modifier.fillMaxSize()) {
         val cx = size.width / 2f
         val cy = size.height * 0.94f
@@ -414,7 +487,7 @@ private fun GaugeCanvas(value: Double?) {
             drawLine(GreedRed, Offset(cx, cy), Offset(px, py), strokeWidth = 5f, cap = StrokeCap.Round)
             drawCircle(GreedRed, radius = 11f, center = Offset(px, py))
             drawCircle(Color.White, radius = 4f, center = Offset(px, py))
-            drawCircle(Color(0xFF2A3442), radius = 16f, center = Offset(cx, cy))
+            drawCircle(hub, radius = 16f, center = Offset(cx, cy))
             drawCircle(GreedRed, radius = 13f, center = Offset(cx, cy))
         }
     }
@@ -422,20 +495,21 @@ private fun GaugeCanvas(value: Double?) {
 
 /** 当前指数：属性 + 数值。 */
 @Composable
-private fun AttrRow(latest: FearLatest?) {
+private fun AttrRow(latest: FearLatest?, dark: Boolean) {
     val emotion = latest?.emotion ?: Emotion.UNKNOWN
     val v = latest?.point?.fear
+    val pal = palette(dark)
     Card(
         modifier = Modifier.fillMaxWidth(),
         shape = RoundedCornerShape(20.dp),
-        colors = CardDefaults.cardColors(containerColor = CardBg),
+        colors = CardDefaults.cardColors(containerColor = pal.card),
     ) {
         Row(
             modifier = Modifier.fillMaxWidth().padding(16.dp),
             verticalAlignment = Alignment.CenterVertically,
         ) {
             Column(modifier = Modifier.weight(1f), horizontalAlignment = Alignment.CenterHorizontally) {
-                Text("当前指数属性", fontSize = 12.sp, color = Muted)
+                Text("当前指数属性", fontSize = 12.sp, color = pal.muted)
                 Spacer(Modifier.height(4.dp))
                 AssistChip(
                     onClick = {},
@@ -445,17 +519,17 @@ private fun AttrRow(latest: FearLatest?) {
             }
             Box(modifier = Modifier.width(1.dp).height(44.dp)) {
                 Canvas(modifier = Modifier.fillMaxSize()) {
-                    drawLine(Color(0xFF2A3442), Offset(size.width / 2, 0f), Offset(size.width / 2, size.height), strokeWidth = 2f)
+                    drawLine(pal.track, Offset(size.width / 2, 0f), Offset(size.width / 2, size.height), strokeWidth = 2f)
                 }
             }
             Column(modifier = Modifier.weight(1f), horizontalAlignment = Alignment.CenterHorizontally) {
-                Text("当前指数数值", fontSize = 12.sp, color = Muted)
+                Text("当前指数数值", fontSize = 12.sp, color = pal.muted)
                 Spacer(Modifier.height(4.dp))
                 Text(
                     text = if (v == null || v.isNaN()) "--" else String.format(Locale.US, "%.0f", v),
                     fontSize = 26.sp,
                     fontWeight = FontWeight.Bold,
-                    color = Color.White,
+                    color = pal.text,
                 )
             }
         }
@@ -464,7 +538,7 @@ private fun AttrRow(latest: FearLatest?) {
                 text = it.source.label + " · " +
                     SimpleDateFormat("MM-dd HH:mm", Locale.getDefault()).format(Date(it.fetchedAtMillis)),
                 fontSize = 11.sp,
-                color = Color.Gray,
+                color = pal.muted,
                 modifier = Modifier.fillMaxWidth().padding(bottom = 10.dp),
                 textAlign = TextAlign.Center,
             )
@@ -474,20 +548,20 @@ private fun AttrRow(latest: FearLatest?) {
 
 /** 往期指数：四小环。 */
 @Composable
-private fun RingsCard(rings: List<PastRing>) {
+private fun RingsCard(rings: List<PastRing>, dark: Boolean) {
     Card(
         modifier = Modifier.fillMaxWidth(),
         shape = RoundedCornerShape(20.dp),
-        colors = CardDefaults.cardColors(containerColor = CardBg),
+        colors = CardDefaults.cardColors(containerColor = pal().card),
     ) {
         Column(Modifier.padding(16.dp)) {
-            Text("往期指数", fontSize = 15.sp, fontWeight = FontWeight.Medium, color = Color.White)
+            Text("往期指数", fontSize = 15.sp, fontWeight = FontWeight.Medium, color = pal().text)
             Spacer(Modifier.height(12.dp))
             if (rings.isEmpty()) {
-                Text("暂无往期数据", fontSize = 13.sp, color = Muted)
+                Text("暂无往期数据", fontSize = 13.sp, color = pal().muted)
             } else {
                 Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceEvenly) {
-                    rings.take(4).forEachIndexed { index, ring -> RingItem(ring, index) }
+                    rings.take(4).forEachIndexed { index, ring -> RingItem(ring, index, dark) }
                 }
             }
         }
@@ -495,8 +569,10 @@ private fun RingsCard(rings: List<PastRing>) {
 }
 
 @Composable
-private fun RingItem(ring: PastRing, index: Int = 0) {
+private fun RingItem(ring: PastRing, index: Int = 0, dark: Boolean = true) {
     val c = ringColor(ring)
+    val track = palette(dark).track
+    val muted = palette(dark).muted
     val targetFrac = if (ring.value.isNaN()) 0f else (ring.value / 100f).toFloat().coerceIn(0f, 1f)
     val animFrac by animateFloatAsState(
         targetValue = targetFrac,
@@ -507,7 +583,7 @@ private fun RingItem(ring: PastRing, index: Int = 0) {
         Box(contentAlignment = Alignment.Center, modifier = Modifier.size(68.dp)) {
             Canvas(modifier = Modifier.fillMaxSize()) {
                 drawArc(
-                    color = Track,
+                    color = track,
                     startAngle = 0f,
                     sweepAngle = 360f,
                     useCenter = false,
@@ -532,21 +608,21 @@ private fun RingItem(ring: PastRing, index: Int = 0) {
             )
         }
         Spacer(Modifier.height(4.dp))
-        Text(ring.name, fontSize = 11.sp, color = Muted)
+        Text(ring.name, fontSize = 11.sp, color = muted)
         Text(ring.emotion.label, fontSize = 11.sp, color = c)
     }
 }
 
 /** 历史走势卡片。 */
 @Composable
-private fun HistoryCard(state: HomeUiState, onRange: (Range) -> Unit) {
+private fun HistoryCard(state: HomeUiState, dark: Boolean, onRange: (Range) -> Unit) {
     Card(
         modifier = Modifier.fillMaxWidth(),
         shape = RoundedCornerShape(20.dp),
-        colors = CardDefaults.cardColors(containerColor = CardBg),
+        colors = CardDefaults.cardColors(containerColor = pal().card),
     ) {
         Column(Modifier.padding(16.dp)) {
-            Text("历史走势", fontSize = 15.sp, fontWeight = FontWeight.Medium, color = Color.White)
+            Text("历史走势", fontSize = 15.sp, fontWeight = FontWeight.Medium, color = pal().text)
             Spacer(Modifier.height(8.dp))
             Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
                 Range.values().forEach { r ->
@@ -600,11 +676,11 @@ private fun HistoryCard(state: HomeUiState, onRange: (Range) -> Unit) {
                     Text(
                         "${points.first().date} ~ ${points.last().date}（${points.size}个交易日）· 按住左右滑动查看单日",
                         fontSize = 11.sp,
-                        color = Color.Gray,
+                        color = pal().muted,
                     )
                 }
             } else {
-                Text("暂无历史数据", fontSize = 13.sp, color = Muted)
+                Text("暂无历史数据", fontSize = 13.sp, color = pal().muted)
             }
         }
     }
@@ -735,10 +811,10 @@ private fun idxOf(xPx: Float, widthPx: Float, n: Int): Int {
 private fun emotionColor(e: Emotion): Color = when (e) {
     Emotion.EXTREME_FEAR -> Color(0xFF0B6ECE)
     Emotion.FEAR -> FearBlue
-    Emotion.NEUTRAL -> Muted
+    Emotion.NEUTRAL -> NeutralGray
     Emotion.GREED -> Color(0xFFFF7A45)
     Emotion.EXTREME_GREED -> GreedRed
-    Emotion.UNKNOWN -> Muted
+    Emotion.UNKNOWN -> NeutralGray
 }
 
 /** 环颜色优先用服务端 status_color，中立（空）用默认。 */
@@ -756,11 +832,11 @@ private fun ringColor(ring: PastRing): Color {
 
 /** 电池优化警告卡：未加白名单时提示，避免后台任务被冻结。 */
 @Composable
-private fun BatteryWarningCard(vm: FearViewModel) {
+private fun BatteryWarningCard(vm: FearViewModel, dark: Boolean) {
     Card(
         modifier = Modifier.fillMaxWidth(),
         shape = RoundedCornerShape(16.dp),
-        colors = CardDefaults.cardColors(containerColor = Color(0xFF2A1F17)),
+        colors = CardDefaults.cardColors(containerColor = pal().warnBg),
     ) {
         Column(Modifier.padding(14.dp)) {
             Text(
@@ -773,7 +849,7 @@ private fun BatteryWarningCard(vm: FearViewModel) {
             Text(
                 "系统省电策略可能会冻结后台任务导致小组件停止更新。建议解除电池优化，并开启自启动。",
                 fontSize = 11.sp,
-                color = Muted,
+                color = pal().muted,
             )
             Spacer(Modifier.height(10.dp))
             Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
@@ -798,7 +874,7 @@ private fun BatteryWarningCard(vm: FearViewModel) {
 
 /** 提醒设置：阈值告警上下限（默认 90/10，与网页订阅一致）。 */
 @Composable
-private fun NotifySettingsCard() {
+private fun NotifySettingsCard(dark: Boolean) {
     val ctx = LocalContext.current
     val notifier = remember { cn.funddb.fear.notify.Notifier }
     var highText by remember {
@@ -811,15 +887,15 @@ private fun NotifySettingsCard() {
     Card(
         modifier = Modifier.fillMaxWidth(),
         shape = RoundedCornerShape(20.dp),
-        colors = CardDefaults.cardColors(containerColor = CardBg),
+        colors = CardDefaults.cardColors(containerColor = pal().card),
     ) {
         Column(Modifier.padding(16.dp)) {
-            Text("提醒设置", fontSize = 15.sp, fontWeight = FontWeight.Medium, color = Color.White)
+            Text("提醒设置", fontSize = 15.sp, fontWeight = FontWeight.Medium, color = pal().text)
             Spacer(Modifier.height(4.dp))
             Text(
                 "指数进入极端区间时推送一次；每天 9 点后推送交易日早报（周末不打扰）",
                 fontSize = 11.sp,
-                color = Muted,
+                color = pal().muted,
             )
             Spacer(Modifier.height(10.dp))
             Row(
@@ -867,19 +943,19 @@ private fun NotifySettingsCard() {
 
 /** 六大因子：横滑列表，每项名称 + 最新值 + 状态 + 迷你走势。 */
 @Composable
-private fun FactorsCard(factors: List<FearFactor>) {
+private fun FactorsCard(factors: List<FearFactor>, dark: Boolean) {
     Card(
         modifier = Modifier.fillMaxWidth(),
         shape = RoundedCornerShape(20.dp),
-        colors = CardDefaults.cardColors(containerColor = CardBg),
+        colors = CardDefaults.cardColors(containerColor = pal().card),
     ) {
         Column(Modifier.padding(16.dp)) {
-            Text("六大因子", fontSize = 15.sp, fontWeight = FontWeight.Medium, color = Color.White)
+            Text("六大因子", fontSize = 15.sp, fontWeight = FontWeight.Medium, color = pal().text)
             Spacer(Modifier.height(4.dp))
-            Text("谁在推动情绪变化", fontSize = 11.sp, color = Muted)
+            Text("谁在推动情绪变化", fontSize = 11.sp, color = pal().muted)
             Spacer(Modifier.height(10.dp))
             if (factors.isEmpty()) {
-                Text("暂无因子数据，下拉刷新试试", fontSize = 13.sp, color = Muted)
+                Text("暂无因子数据，下拉刷新试试", fontSize = 13.sp, color = pal().muted)
             } else {
                 Row(
                     modifier = Modifier.fillMaxWidth()
@@ -899,10 +975,10 @@ private fun FactorItem(f: FearFactor) {
     Card(
         modifier = Modifier.width(148.dp),
         shape = RoundedCornerShape(14.dp),
-        colors = CardDefaults.cardColors(containerColor = Color(0xFF1E2632)),
+        colors = CardDefaults.cardColors(containerColor = pal().inner),
     ) {
         Column(Modifier.padding(10.dp)) {
-            Text(f.name.ifBlank { f.title }, fontSize = 13.sp, fontWeight = FontWeight.Medium, color = Color.White)
+            Text(f.name.ifBlank { f.title }, fontSize = 13.sp, fontWeight = FontWeight.Medium, color = pal().text)
             Spacer(Modifier.height(2.dp))
             Row(verticalAlignment = Alignment.CenterVertically) {
                 Text(
@@ -913,7 +989,7 @@ private fun FactorItem(f: FearFactor) {
                 )
                 if (f.unit.isNotBlank()) {
                     Spacer(Modifier.width(2.dp))
-                    Text(f.unit, fontSize = 10.sp, color = Muted)
+                    Text(f.unit, fontSize = 10.sp, color = pal().muted)
                 }
             }
             Text(
