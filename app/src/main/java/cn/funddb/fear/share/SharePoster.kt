@@ -28,8 +28,9 @@ object SharePoster {
         history: List<FearPoint>,
         width: Int = 1080,
     ): Bitmap? {
-        val v = latest?.point?.fear?.takeUnless { it.isNaN() } ?: return null
-        val emotion = latest.emotion
+        val safe = latest ?: return null
+        val v = safe.point.fear?.takeUnless { it.isNaN() } ?: return null
+        val emotion = safe.emotion
         val pad = 72f
         var y = pad + 90f
         val hTitle = 200f
@@ -61,7 +62,7 @@ object SharePoster {
         }
         text("恐惧贪婪指数", pad, y, 64f, 0xFFFFFFFF.toInt(), true)
         y += 84f
-        text("更新时间 ${latest.currentTime ?: latest.point.date}", pad, y, 36f, 0xFF9AA4B2.toInt(), false)
+        text("更新时间 ${safe.currentTime ?: safe.point.date}", pad, y, 36f, 0xFF9AA4B2.toInt(), false)
         y += hTitle
         text(String.format(java.util.Locale.US, "%.0f", v), pad, y, 220f, emoColor, true)
         text(emotion.label, pad + 420f, y - 20f, 84f, emoColor, true)
