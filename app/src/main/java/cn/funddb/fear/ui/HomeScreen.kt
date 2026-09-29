@@ -54,6 +54,7 @@ import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.Path
+import androidx.compose.ui.graphics.PathEffect
 import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.graphics.StrokeJoin
 import androidx.compose.ui.graphics.drawscope.Stroke
@@ -526,6 +527,22 @@ private fun HistoryCard(state: HomeUiState, onRange: (Range) -> Unit) {
                     )
                 }
             }
+            Spacer(Modifier.height(4.dp))
+            var showIndex by remember(points) { mutableStateOf(false) }
+            Row(
+                horizontalArrangement = Arrangement.spacedBy(6.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                FilterChip(
+                    selected = showIndex,
+                    onClick = { showIndex = !showIndex },
+                    label = { Text("叠加上证", fontSize = 12.sp) },
+                )
+                if (showIndex) {
+                    Text("— 恐贪指数", fontSize = 11.sp, color = FearBlue)
+                    Text("┄ 上证指数", fontSize = 11.sp, color = Color(0xFFE8C547))
+                }
+            }
             Spacer(Modifier.height(8.dp))
             val points = state.history
                 .filter { it.fear != null }
@@ -536,6 +553,7 @@ private fun HistoryCard(state: HomeUiState, onRange: (Range) -> Unit) {
                     points = points,
                     selectedIndex = selectedIdx,
                     onSelectIndex = { selectedIdx = it },
+                    showIndex = showIndex,
                     modifier = Modifier.fillMaxWidth().height(200.dp),
                 )
                 Spacer(Modifier.height(4.dp))
@@ -568,6 +586,7 @@ private fun FearChart(
     points: List<FearPoint>,
     selectedIndex: Int?,
     onSelectIndex: (Int) -> Unit,
+    showIndex: Boolean,
     modifier: Modifier = Modifier,
 ) {
     Canvas(
@@ -629,6 +648,33 @@ private fun FearChart(
         )
         drawCircle(Color.White, radius = 7f, center = Offset(x(vals.size - 1), y(vals.last())))
         drawCircle(FearBlue, radius = 4.5f, center = Offset(x(vals.size - 1), y(vals.last())))
+        // 上证叠加：归一化到图表高度，黄色虚线（只看形态对照）
+        if (showIndex) {
+            val rawIdx = points.map { it.index }
+            val known = rawIdx.filterNotNull()
+            if (known.size >= 2) {
+                val lo = known.min()
+                val hi = known.max()
+                val span = (hi - lo).takeIf { it > 0 } ?: 1.0
+                var lastV = known.first()
+                val idxPath = Path()
+                rawIdx.forEachIndexed { i, v ->
+                    if (v != null) lastV = v
+                    val ny = bottom - (bottom - top) * ((lastV - lo) / span)
+                    if (i == 0) idxPath.moveTo(x(i), ny.toFloat()) else idxPath.lineTo(x(i), ny.toFloat())
+                }
+                drawPath(
+                    idxPath,
+                    Color(0xFFE8C547),
+                    style = Stroke(
+                        width = 3.5f,
+                        cap = StrokeCap.Round,
+                        join = StrokeJoin.Round,
+                        pathEffect = PathEffect.dashPathEffect(floatArrayOf(12f, 9f)),
+                    ),
+                )
+            }
+        }
         // 选中态：竖向准星 + 高亮点
         val selIdx = selectedIndex?.takeIf { it in vals.indices }
         if (selIdx != null) {
