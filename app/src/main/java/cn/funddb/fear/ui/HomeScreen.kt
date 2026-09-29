@@ -1,6 +1,11 @@
 package cn.funddb.fear.ui
 
 import android.app.Application
+import androidx.compose.animation.core.FastOutSlowInEasing
+import androidx.compose.animation.core.Spring
+import androidx.compose.animation.core.animateFloatAsState
+import androidx.compose.animation.core.spring
+import androidx.compose.animation.core.tween
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.gestures.awaitEachGesture
 import androidx.compose.foundation.gestures.awaitFirstDown
@@ -277,11 +282,26 @@ fun HomeScreen(vm: FearViewModel) {
     }
 }
 
-/** 顶部仪表盘卡片：渐变弧 + 指针 + 中央数值。 */
+/** 顶部仪表盘卡片：渐变弧 + 弹簧指针 + 滚动数字。 */
 @Composable
 private fun GaugeCard(latest: FearLatest?) {
     val v = latest?.point?.fear
     val emotion = latest?.emotion ?: Emotion.of(v)
+    // 数字：平滑滚动；指针：弹簧回弹
+    val target = if (v == null || v.isNaN()) 0f else v.toFloat().coerceIn(0f, 100f)
+    val numV by animateFloatAsState(
+        targetValue = target,
+        animationSpec = tween(durationMillis = 1200, easing = FastOutSlowInEasing),
+        label = "gaugeNumber",
+    )
+    val needleV by animateFloatAsState(
+        targetValue = target,
+        animationSpec = spring(
+            dampingRatio = Spring.DampingRatioMediumBouncy,
+            stiffness = Spring.StiffnessLow,
+        ),
+        label = "gaugeNeedle",
+    )
     Card(
         modifier = Modifier.fillMaxWidth(),
         shape = RoundedCornerShape(20.dp),
@@ -289,14 +309,14 @@ private fun GaugeCard(latest: FearLatest?) {
     ) {
         Column(Modifier.padding(top = 16.dp, start = 16.dp, end = 16.dp, bottom = 8.dp)) {
             Box(modifier = Modifier.fillMaxWidth().height(190.dp)) {
-                GaugeCanvas(value = v)
+                GaugeCanvas(value = needleV.toDouble())
                 Column(
                     modifier = Modifier.fillMaxSize().padding(bottom = 6.dp),
                     horizontalAlignment = Alignment.CenterHorizontally,
                     verticalArrangement = Arrangement.Bottom,
                 ) {
                     Text(
-                        text = if (v == null || v.isNaN()) "--" else String.format(Locale.US, "%.0f", v),
+                        text = if (v == null || v.isNaN()) "--" else String.format(Locale.US, "%.0f", numV),
                         fontSize = 40.sp,
                         fontWeight = FontWeight.Bold,
                         color = Color.White,
@@ -436,7 +456,7 @@ private fun RingsCard(rings: List<PastRing>) {
                 Text("暂无往期数据", fontSize = 13.sp, color = Muted)
             } else {
                 Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceEvenly) {
-                    rings.take(4).forEach { RingItem(it) }
+                    rings.take(4).forEachIndexed { index, ring -> RingItem(ring, index) }
                 }
             }
         }
@@ -444,8 +464,14 @@ private fun RingsCard(rings: List<PastRing>) {
 }
 
 @Composable
-private fun RingItem(ring: PastRing) {
+private fun RingItem(ring: PastRing, index: Int = 0) {
     val c = ringColor(ring)
+    val targetFrac = if (ring.value.isNaN()) 0f else (ring.value / 100f).toFloat().coerceIn(0f, 1f)
+    val animFrac by animateFloatAsState(
+        targetValue = targetFrac,
+        animationSpec = tween(durationMillis = 900, delayMillis = index * 80, easing = FastOutSlowInEasing),
+        label = "ringArc",
+    )
     Column(horizontalAlignment = Alignment.CenterHorizontally, modifier = Modifier.width(72.dp)) {
         Box(contentAlignment = Alignment.Center, modifier = Modifier.size(68.dp)) {
             Canvas(modifier = Modifier.fillMaxSize()) {
@@ -456,7 +482,7 @@ private fun RingItem(ring: PastRing) {
                     useCenter = false,
                     style = Stroke(width = 11f),
                 )
-                val frac = if (ring.value.isNaN()) 0f else (ring.value / 100f).toFloat().coerceIn(0f, 1f)
+                val frac = animFrac
                 if (frac > 0f) {
                     drawArc(
                         color = c,
