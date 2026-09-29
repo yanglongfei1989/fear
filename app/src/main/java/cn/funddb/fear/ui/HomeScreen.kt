@@ -634,7 +634,10 @@ private fun HistoryCard(state: HomeUiState, dark: Boolean, onRange: (Range) -> U
                 }
             }
             Spacer(Modifier.height(4.dp))
-            var showIndex by remember(points) { mutableStateOf(false) }
+            val points = state.history
+                .filter { it.fear != null }
+                .takeLast(if (state.range.days == Int.MAX_VALUE) Int.MAX_VALUE else state.range.days)
+            var showIndex by remember(state.range) { mutableStateOf(false) }
             Row(
                 horizontalArrangement = Arrangement.spacedBy(6.dp),
                 verticalAlignment = Alignment.CenterVertically,
@@ -650,9 +653,6 @@ private fun HistoryCard(state: HomeUiState, dark: Boolean, onRange: (Range) -> U
                 }
             }
             Spacer(Modifier.height(8.dp))
-            val points = state.history
-                .filter { it.fear != null }
-                .takeLast(if (state.range.days == Int.MAX_VALUE) Int.MAX_VALUE else state.range.days)
             if (points.size >= 2) {
                 var selectedIdx by remember(points) { mutableStateOf<Int?>(null) }
                 FearChart(
