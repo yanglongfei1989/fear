@@ -33,7 +33,16 @@ jobs:
           gradle-version: 8.11.1
 
       - name: Build debug APK
-        run: gradle assembleDebug --stacktrace
+        run: |
+          set -o pipefail
+          gradle assembleDebug --stacktrace 2>&1 | tee gradle-build.log
+
+      - name: Show Kotlin errors summary
+        if: failure()
+        run: |
+          echo "===== KOTLIN ERRORS ====="
+          grep -E "^e: |error:" gradle-build.log | head -60
+          echo "===== END ====="
 
       - name: Upload APK
         uses: actions/upload-artifact@v4
