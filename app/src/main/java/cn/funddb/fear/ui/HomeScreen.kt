@@ -6,11 +6,16 @@ import android.content.pm.PackageManager
 import android.os.Build
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.animation.core.Animatable
 import androidx.compose.animation.core.FastOutSlowInEasing
+import androidx.compose.animation.core.RepeatMode
 import androidx.compose.animation.core.Spring
 import androidx.compose.animation.core.animateFloatAsState
+import androidx.compose.animation.core.infiniteRepeatable
+import androidx.compose.animation.core.rememberInfiniteTransition
 import androidx.compose.animation.core.spring
 import androidx.compose.animation.core.tween
+import androidx.compose.foundation.background
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.gestures.awaitEachGesture
 import androidx.compose.foundation.gestures.awaitFirstDown
@@ -233,16 +238,26 @@ class FearViewModel(app: Application) : AndroidViewModel(app) {
             val s = _state.value
             _state.value = s.copy(loading = s.history.isEmpty(), error = null)
             try {
+                val latest = repo.latest()
+                val history = repo.history()
+                val rings = repo.rings()
+                val factors = repo.factors()
                 _state.value = s.copy(
                     loading = false,
                     refreshing = false,
-                    latest = repo.latest(),
-                    history = repo.history(),
-                    rings = repo.rings(),
-                    factors = repo.factors(),
+                    latest = latest,
+                    history = history,
+                    rings = rings,
+                    factors = factors,
                     batteryIgnored = batteryIgnoredNow(),
                     workerStatus = workerStatusNow(),
                 )
+                // App 内打开/刷新后直接评估通知（早报打开即达，不依赖后台调度）
+                runCatching {
+                    val ctx = getApplication<Application>()
+                    cn.funddb.fear.notify.Notifier.evaluateAlerts(ctx, latest)
+                    cn.funddb.fear.notify.Notifier.evaluateMorning(ctx, latest)
+                }
             } catch (e: Exception) {
                 _state.value = s.copy(
                     loading = false,
@@ -338,8 +353,7 @@ fun HomeScreen(vm: FearViewModel) {
             horizontalAlignment = Alignment.CenterHorizontally,
         ) {
             if (state.loading) {
-                Spacer(Modifier.height(48.dp))
-                CircularProgressIndicator()
+                LoadingSkeleton()
             } else {
                 if (!state.batteryIgnored) {
                     BatteryWarningCard(vm, state.isDark)
@@ -391,21 +405,21 @@ fun HomeScreen(vm: FearViewModel) {
 private fun GaugeCard(latest: FearLatest?, dark: Boolean) {
     val v = latest?.point?.fear
     val emotion = latest?.emotion ?: Emotion.of(v)
-    // 数字：平滑滚动；指针：弹簧回弹
+    // 数字：平滑滚动；指针：弹簧回弹（Animatable 从 0 起手，保证入场可见动画）
     val target = if (v == null || v.isNaN()) 0f else v.toFloat().coerceIn(0f, 100f)
-    val numV by animateFloatAsState(
-        targetValue = target,
-        animationSpec = tween(durationMillis = 1200, easing = FastOutSlowInEasing),
-        label = "gaugeNumber",
-    )
-    val needleV by animateFloatAsState(
-        targetValue = target,
-        animationSpec = spring(
-            dampingRatio = Spring.DampingRatioMediumBouncy,
-            stiffness = Spring.StiffnessLow,
-        ),
-        label = "gaugeNeedle",
-    )
+    val numAnim = remember(target) { Animatable(0f) }
+    val needleAnim = remember(target) { Animatable(0f) }
+    LaunchedEffect(target) {
+        launch { numAnim.animateTo(target, tween(durationMillis = 1200, easing = FastOutSlowInEasing)) }
+        launch {
+            needleAnim.animateTo(
+                target,
+                spring(dampingRatio = Spring.DampingRatioMediumBouncy, stiffness = Spring.StiffnessLow),
+            )
+        }
+    }
+    val numV = numAnim.value
+    val needleV = needleAnim.value
     Card(
         modifier = Modifier.fillMaxWidth(),
         shape = RoundedCornerShape(20.dp),
@@ -575,11 +589,12 @@ private fun RingItem(ring: PastRing, index: Int = 0, dark: Boolean = true) {
     val track = palette(dark).track
     val muted = palette(dark).muted
     val targetFrac = if (ring.value.isNaN()) 0f else (ring.value / 100f).toFloat().coerceIn(0f, 1f)
-    val animFrac by animateFloatAsState(
-        targetValue = targetFrac,
-        animationSpec = tween(durationMillis = 900, delayMillis = index * 80, easing = FastOutSlowInEasing),
-        label = "ringArc",
-    )
+    val arcAnim = remember(targetFrac) { Animatable(0f) }
+    LaunchedEffect(targetFrac) {
+        kotlinx.coroutines.delay(index * 80L)
+        arcAnim.animateTo(targetFrac, tween(durationMillis = 900, easing = FastOutSlowInEasing))
+    }
+    val frac = arcAnim.value
     Column(horizontalAlignment = Alignment.CenterHorizontally, modifier = Modifier.width(72.dp)) {
         Box(contentAlignment = Alignment.Center, modifier = Modifier.size(68.dp)) {
             Canvas(modifier = Modifier.fillMaxSize()) {
@@ -590,7 +605,7 @@ private fun RingItem(ring: PastRing, index: Int = 0, dark: Boolean = true) {
                     useCenter = false,
                     style = Stroke(width = 11f),
                 )
-                val frac = animFrac
+                val frac = arcAnim.value
                 if (frac > 0f) {
                     drawArc(
                         color = c,
@@ -1043,4 +1058,79 @@ private fun parseHexColor(hex: String, fallback: Color): Color {
         }
     }
     return fallback
+}
+
+/** 首次加载骨架屏：呼吸闪烁的占位卡片，避免一片空白。 */
+@Composable
+private fun LoadingSkeleton() {
+    val pulse by rememberInfiniteTransition(label = "skel").animateFloat(
+        initialValue = 0.35f,
+        targetValue = 0.85f,
+        animationSpec = infiniteRepeatable(
+            animation = tween(900, easing = FastOutSlowInEasing),
+            repeatMode = RepeatMode.Reverse,
+        ),
+        label = "skelAlpha",
+    )
+    val phColor = pal().track.copy(alpha = pulse)
+    Column {
+        Card(
+            modifier = Modifier.fillMaxWidth(),
+            shape = RoundedCornerShape(20.dp),
+            colors = CardDefaults.cardColors(containerColor = pal().card),
+        ) {
+            Column(
+                Modifier.padding(16.dp),
+                horizontalAlignment = Alignment.CenterHorizontally,
+            ) {
+                Box(
+                    modifier = Modifier.fillMaxWidth().height(150.dp)
+                        .background(phColor, RoundedCornerShape(14.dp)),
+                )
+                Spacer(Modifier.height(12.dp))
+                Box(
+                    modifier = Modifier.width(120.dp).height(34.dp)
+                        .background(phColor, RoundedCornerShape(17.dp)),
+                )
+                Spacer(Modifier.height(8.dp))
+                Box(
+                    modifier = Modifier.width(200.dp).height(14.dp)
+                        .background(phColor, RoundedCornerShape(7.dp)),
+                )
+            }
+        }
+        Spacer(Modifier.height(12.dp))
+        Card(
+            modifier = Modifier.fillMaxWidth(),
+            shape = RoundedCornerShape(20.dp),
+            colors = CardDefaults.cardColors(containerColor = pal().card),
+        ) {
+            Row(
+                Modifier.padding(16.dp).fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceEvenly,
+            ) {
+                repeat(4) {
+                    Box(
+                        modifier = Modifier.size(64.dp)
+                            .background(phColor, RoundedCornerShape(32.dp)),
+                    )
+                }
+            }
+        }
+        Spacer(Modifier.height(12.dp))
+        Card(
+            modifier = Modifier.fillMaxWidth().height(200.dp),
+            shape = RoundedCornerShape(20.dp),
+            colors = CardDefaults.cardColors(containerColor = pal().card),
+        ) { }
+        Spacer(Modifier.height(12.dp))
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            CircularProgressIndicator(
+                modifier = Modifier.size(16.dp),
+                strokeWidth = 2.dp,
+            )
+            Spacer(Modifier.width(8.dp))
+            Text("正在拉取最新指数…", fontSize = 12.sp, color = pal().muted)
+        }
+    }
 }
