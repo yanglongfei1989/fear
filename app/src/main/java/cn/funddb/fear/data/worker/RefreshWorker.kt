@@ -25,35 +25,49 @@ const val IMMEDIATE_WORK_NAME = "fear-immediate-refresh"
 class RefreshWorker(ctx: Context, params: WorkerParameters) : CoroutineWorker(ctx, params) {
     override suspend fun doWork(): Result {
         markAttempt(applicationContext)
-        return try {
-            val repo = FearRepository(applicationContext)
-            repo.refresh()
-            FearWidget().updateAll(applicationContext)
-            markSuccess(applicationContext)
-            runCatching {
-                val latest = repo.latest()
-                cn.funddb.fear.notify.Notifier.evaluateAlerts(applicationContext, latest)
-                cn.funddb.fear.notify.Notifier.evaluateMorning(applicationContext, latest)
-            }
+        return if (doRefreshWork(applicationContext)) {
             Result.success()
-        } catch (e: Exception) {
-            if (runAttemptCount < 3) Result.retry() else Result.failure()
+        } else if (runAttemptCount < 3) {
+            Result.retry()
+        } else {
+            Result.failure()
         }
-    }
-
-    private fun prefs(context: Context) =
-        context.getSharedPreferences("fear_prefs", Context.MODE_PRIVATE)
-
-    private fun markAttempt(context: Context) {
-        prefs(context).edit().putLong("last_worker_attempt", System.currentTimeMillis()).apply()
-    }
-
-    private fun markSuccess(context: Context) {
-        prefs(context).edit().putLong("last_worker_run", System.currentTimeMillis()).apply()
     }
 }
 
-/** 注册每小时周期任务。 */
+/**
+ * 公共刷新流程：Worker 与精确闹钟共用，避免两套逻辑分叉。
+ * @return true=刷新成功
+ */
+suspend fun doRefreshWork(context: Context): Boolean {
+    return try {
+        val repo = FearRepository(context)
+        repo.refresh()
+        FearWidget().updateAll(context)
+        markSuccess(context)
+        runCatching {
+            val latest = repo.latest()
+            cn.funddb.fear.notify.Notifier.evaluateAlerts(context, latest)
+            cn.funddb.fear.notify.Notifier.evaluateMorning(context, latest)
+        }
+        true
+    } catch (_: Exception) {
+        false
+    }
+}
+
+private fun prefs(context: Context) =
+    context.getSharedPreferences("fear_prefs", Context.MODE_PRIVATE)
+
+fun markAttempt(context: Context) {
+    prefs(context).edit().putLong("last_worker_attempt", System.currentTimeMillis()).apply()
+}
+
+fun markSuccess(context: Context) {
+    prefs(context).edit().putLong("last_worker_run", System.currentTimeMillis()).apply()
+}
+
+/** 注册每小时周期任务（兜底通道）。 */
 fun scheduleHourly(context: Context) {
     val req = PeriodicWorkRequestBuilder<RefreshWorker>(1, TimeUnit.HOURS)
         .setConstraints(
@@ -91,6 +105,7 @@ class BootReceiver : BroadcastReceiver() {
         if (intent?.action == Intent.ACTION_BOOT_COMPLETED) {
             scheduleHourly(context)
             triggerImmediateRefresh(context)
+            AlarmScheduler.scheduleNext(context)
         }
     }
 }

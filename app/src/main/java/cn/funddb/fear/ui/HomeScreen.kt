@@ -188,6 +188,27 @@ class FearViewModel(app: Application) : AndroidViewModel(app) {
         cn.funddb.fear.util.BatteryOptimizer.openAutoStartSettings(getApplication())
     }
 
+    val canScheduleAlarms: Boolean
+        get() = cn.funddb.fear.data.worker.AlarmScheduler.canSchedule(getApplication())
+
+    fun requestExactAlarm() {
+        try {
+            val app = getApplication<Application>()
+            val intent = android.content.Intent(
+                android.provider.Settings.ACTION_REQUEST_SCHEDULE_EXACT_ALARM,
+            ).apply {
+                data = android.net.Uri.parse("package:${app.packageName}")
+                addFlags(android.content.Intent.FLAG_ACTIVITY_NEW_TASK)
+            }
+            app.startActivity(intent)
+        } catch (_: Exception) {
+        }
+    }
+
+    fun rescheduleAlarm() {
+        cn.funddb.fear.data.worker.AlarmScheduler.scheduleNext(getApplication())
+    }
+
     private fun batteryIgnoredNow(): Boolean =
         cn.funddb.fear.util.BatteryOptimizer.isIgnoringBatteryOptimizations(getApplication())
 
@@ -213,7 +234,15 @@ class FearViewModel(app: Application) : AndroidViewModel(app) {
             val fmt = java.text.SimpleDateFormat("MM-dd HH:mm", java.util.Locale.getDefault())
             val okStr = if (lastOk == 0L) "从未成功" else fmt.format(java.util.Date(lastOk))
             val tryStr = if (lastTry == 0L) "从未调度" else fmt.format(java.util.Date(lastTry))
-            "后台任务：$stateCn · 成功：$okStr · 调度：$tryStr"
+            val alarmStr = if (cn.funddb.fear.data.worker.AlarmScheduler.canSchedule(getApplication())) {
+                val next = prefs.getLong(
+                    cn.funddb.fear.data.worker.AlarmScheduler.PREF_NEXT_ALARM_AT, 0L,
+                )
+                if (next == 0L) "闹钟待排期" else "闹钟下次" + fmt.format(java.util.Date(next))
+            } else {
+                "闹钟未授权"
+            }
+            "后台任务：$stateCn · 成功：$okStr · 调度：$tryStr\n$alarmStr"
         } catch (_: Exception) {
             "后台任务：查询失败"
         }
@@ -394,6 +423,15 @@ fun HomeScreen(vm: FearViewModel) {
                     color = pal().muted,
                     textAlign = TextAlign.Center,
                 )
+            }
+            if (!vm.canScheduleAlarms) {
+                Spacer(Modifier.height(6.dp))
+                Button(onClick = {
+                    vm.requestExactAlarm()
+                    vm.rescheduleAlarm()
+                }) {
+                    Text("开启准时提醒（每小时）", fontSize = 12.sp)
+                }
             }
             Spacer(Modifier.height(8.dp))
         }
